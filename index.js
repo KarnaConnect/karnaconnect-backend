@@ -14,8 +14,17 @@ app.get('/', (req, res) => {
 });
 
 app.post('/webhook/vapi', async (req, res) => {
-  const { call } = req.body;
-  if (!call) return res.status(400).json({ error: 'No call data' });
+  console.log('Webhook received:', JSON.stringify(req.body, null, 2));
+  
+  const body = req.body;
+  const call = body.call || body;
+
+  if (!call) {
+    console.log('No call data found');
+    return res.status(400).json({ error: 'No call data' });
+  }
+
+  console.log('Call data:', JSON.stringify(call, null, 2));
 
   const { data, error } = await supabase.from('calls').insert([{
     vapi_call_id: call.id,
@@ -27,7 +36,12 @@ app.post('/webhook/vapi', async (req, res) => {
     ended_at: call.endedAt
   }]);
 
-  if (error) return res.status(500).json({ error });
+  if (error) {
+    console.log('Supabase error:', error);
+    return res.status(500).json({ error });
+  }
+  
+  console.log('Call saved successfully');
   res.json({ success: true, data });
 });
 
