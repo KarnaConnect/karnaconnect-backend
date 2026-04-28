@@ -14,15 +14,37 @@ app.get('/', (req, res) => {
 });
 
 app.post('/webhook/vapi', async (req, res) => {
-  const body = req.body;
-  
-  // Log every top level key and its value
-  console.log('=== TOP LEVEL KEYS ===');
-  Object.keys(body).forEach(key => {
-    console.log(`KEY: ${key} = ${JSON.stringify(body[key]).substring(0, 100)}`);
-  });
+  console.log('Webhook received');
 
-  res.json({ success: true });
+  const body = req.body;
+  const message = body.message || body;
+  const call = message.call || {};
+  const analysis = message.analysis || {};
+  const customer = message.customer || call.customer || {};
+
+  console.log('Message type:', message.type);
+  console.log('Caller:', customer.number);
+  console.log('Summary:', analysis.summary);
+  console.log('Outcome:', message.endedReason);
+  console.log('Duration:', message.durationSeconds);
+
+  const { data, error } = await supabase.from('calls').insert([{
+    vapi_call_id: call.id,
+    caller_number: customer.number,
+    call_duration: message.durationSeconds,
+    call_outcome: message.endedReason,
+    call_summary: analysis.summary,
+    started_at: call.createdAt,
+    ended_at: message.endedAt
+  }]);
+
+  if (error) {
+    console.log('Supabase error:', error);
+    return res.status(500).json({ error });
+  }
+
+  console.log('Call saved successfully');
+  res.json({ success: true, data });
 });
 
 const PORT = process.env.PORT || 3000;
