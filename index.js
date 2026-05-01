@@ -127,18 +127,19 @@ app.post('/webhook/vapi', async (req, res) => {
       </div>
     `
 
-    try {
-      await transporter.sendMail({
+   try {
+      console.log('Attempting email to:', notifyEmail)
+      console.log('SMTP config:', process.env.SMTP_HOST, process.env.SMTP_PORT, process.env.SMTP_USER)
+      const result = await transporter.sendMail({
         from: process.env.SMTP_FROM,
         to: notifyEmail,
         subject: `📞 New Call — ${caller} (${duration}) · ${businessName}`,
         html: emailHtml
       })
-      console.log('Email sent to:', notifyEmail)
+      console.log('Email sent successfully:', result.messageId)
     } catch (emailError) {
-      console.log('Email error:', emailError.message)
+      console.log('Email error full:', emailError)
     }
-  }
 
   res.json({ success: true, data });
 });
