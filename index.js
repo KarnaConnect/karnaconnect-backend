@@ -34,7 +34,7 @@ const clientNotifyEmail = {
   'dd674a90-90b5-4f57-9b7b-cced0cb57d89': 'syed@descomconsultant.com.au'
 }
 
-const clientName = {
+const clientNames = {
   'karnaconnect': 'KarnaConnect',
   'dd674a90-90b5-4f57-9b7b-cced0cb57d89': 'Descom Consultants'
 }
@@ -76,19 +76,18 @@ app.post('/webhook/vapi', async (req, res) => {
 
   console.log('Call saved successfully');
 
-  // Send email notification
   if (clientNotifyEmail[notifyKey]) {
-    const notifyEmail = clientNotifyEmail[notifyKey]
-    const businessName = clientName[notifyKey] || 'KarnaConnect'
-    const duration = message.durationSeconds ? `${Math.round(message.durationSeconds)}s` : 'Unknown'
-    const outcome = message.endedReason || 'Unknown'
-    const caller = customer.number || 'Unknown'
-    const summary = analysis.summary || 'No summary available'
+    const notifyEmail = clientNotifyEmail[notifyKey];
+    const businessName = clientNames[notifyKey] || 'KarnaConnect';
+    const duration = message.durationSeconds ? `${Math.round(message.durationSeconds)}s` : 'Unknown';
+    const outcome = message.endedReason || 'Unknown';
+    const caller = customer.number || 'Unknown';
+    const summary = analysis.summary || 'No summary available';
 
     const emailHtml = `
       <div style="font-family: 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; background: #f8fafc; padding: 20px;">
         <div style="background: linear-gradient(135deg, #2563eb, #06b6d4); border-radius: 12px 12px 0 0; padding: 24px; text-align: center;">
-          <h1 style="color: white; margin: 0; font-size: 1.3rem;">⚛ New Call — Mash</h1>
+          <h1 style="color: white; margin: 0; font-size: 1.3rem;">New Call — Mash</h1>
           <p style="color: rgba(255,255,255,0.8); margin: 6px 0 0; font-size: 0.85rem;">${businessName} · KarnaConnect AI</p>
         </div>
         <div style="background: white; border-radius: 0 0 12px 12px; padding: 28px; border: 1px solid #e2e8f0; border-top: none;">
@@ -112,12 +111,12 @@ app.post('/webhook/vapi', async (req, res) => {
           </table>
 
           <div style="background: #f8fafc; border-left: 3px solid #2563eb; border-radius: 0 8px 8px 0; padding: 16px; margin-bottom: 24px;">
-            <p style="color: #2563eb; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin: 0 0 8px;">⚛ AI Call Summary</p>
+            <p style="color: #2563eb; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin: 0 0 8px;">AI Call Summary</p>
             <p style="color: #475569; font-size: 0.9rem; line-height: 1.7; margin: 0;">${summary}</p>
           </div>
 
           <a href="https://dashboard.karnaconnect.com.au" style="display: block; text-align: center; background: linear-gradient(135deg, #2563eb, #06b6d4); color: white; padding: 13px 20px; border-radius: 8px; text-decoration: none; font-weight: 700; font-size: 0.9rem;">
-            View Full Dashboard →
+            View Full Dashboard
           </a>
 
           <p style="text-align: center; color: #94a3b8; font-size: 0.75rem; margin-top: 20px;">
@@ -125,21 +124,22 @@ app.post('/webhook/vapi', async (req, res) => {
           </p>
         </div>
       </div>
-    `
+    `;
 
-   try {
-      console.log('Attempting email to:', notifyEmail)
-      console.log('SMTP config:', process.env.SMTP_HOST, process.env.SMTP_PORT, process.env.SMTP_USER)
+    try {
+      console.log('Attempting email to:', notifyEmail);
+      console.log('SMTP config:', process.env.SMTP_HOST, process.env.SMTP_PORT, process.env.SMTP_USER);
       const result = await transporter.sendMail({
         from: process.env.SMTP_FROM,
         to: notifyEmail,
-        subject: `📞 New Call — ${caller} (${duration}) · ${businessName}`,
+        subject: `New Call - ${caller} (${duration}) - ${businessName}`,
         html: emailHtml
-      })
-      console.log('Email sent successfully:', result.messageId)
+      });
+      console.log('Email sent successfully:', result.messageId);
     } catch (emailError) {
-      console.log('Email error full:', emailError)
+      console.log('Email error:', emailError.message);
     }
+  }
 
   res.json({ success: true, data });
 });
