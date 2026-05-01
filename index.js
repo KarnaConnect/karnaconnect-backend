@@ -66,7 +66,7 @@ app.post('/webhook/vapi', async (req, res) => {
   console.log('Call saved successfully');
 
   // Send email notification if client has a notify email
-  if (clientId && clientNotifyEmail[clientId]) {
+  const notifyKey = clientId || 'karnaconnect' if (clientNotifyEmail[notifyKey]) {
     const notifyEmail = clientNotifyEmail[clientId]
     const duration = message.durationSeconds ? `${Math.round(message.durationSeconds)}s` : 'Unknown'
     const outcome = message.endedReason || 'Unknown'
