@@ -9,6 +9,13 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
+// Map VAPI phone number IDs to client IDs in your database
+// Add each client's VAPI phone number ID and their Supabase client ID here
+const phoneNumberToClient = {
+  'YOUR_KARNACONNECT_VAPI_PHONE_ID': null, // KarnaConnect — no client_id needed
+  'YOUR_DESCOM_VAPI_PHONE_ID': 'dd674a90-90b5-4f57-9b7b-cced0cb57d89'
+}
+
 app.get('/', (req, res) => {
   res.send('KarnaConnect API is running');
 });
@@ -21,12 +28,14 @@ app.post('/webhook/vapi', async (req, res) => {
   const call = message.call || {};
   const analysis = message.analysis || {};
   const customer = message.customer || call.customer || {};
+  const phoneNumberId = call.phoneNumberId;
 
-  console.log('Message type:', message.type);
+  console.log('Phone Number ID:', phoneNumberId);
   console.log('Caller:', customer.number);
-  console.log('Summary:', analysis.summary);
-  console.log('Outcome:', message.endedReason);
-  console.log('Duration:', message.durationSeconds);
+
+  // Look up which client this call belongs to
+  const clientId = phoneNumberToClient[phoneNumberId] || null;
+  console.log('Client ID:', clientId);
 
   const { data, error } = await supabase.from('calls').insert([{
     vapi_call_id: call.id,
@@ -35,7 +44,8 @@ app.post('/webhook/vapi', async (req, res) => {
     call_outcome: message.endedReason,
     call_summary: analysis.summary,
     started_at: call.createdAt,
-    ended_at: message.endedAt
+    ended_at: message.endedAt,
+    client_id: clientId
   }]);
 
   if (error) {
