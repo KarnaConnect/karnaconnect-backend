@@ -26,7 +26,13 @@ const phoneNumberToClient = {
 }
 
 const clientNotifyEmail = {
+  'karnaconnect': 'info@karnaconnect.com.au',
   'dd674a90-90b5-4f57-9b7b-cced0cb57d89': 'syed@descomconsultant.com.au'
+}
+
+const clientName = {
+  'karnaconnect': 'KarnaConnect',
+  'dd674a90-90b5-4f57-9b7b-cced0cb57d89': 'Descom Consultants'
 }
 
 app.get('/', (req, res) => {
@@ -44,6 +50,7 @@ app.post('/webhook/vapi', async (req, res) => {
   const phoneNumberId = call.phoneNumberId;
 
   const clientId = phoneNumberToClient[phoneNumberId] || null;
+  const notifyKey = clientId || 'karnaconnect';
   console.log('Client ID:', clientId);
   console.log('Caller:', customer.number);
 
@@ -65,9 +72,10 @@ app.post('/webhook/vapi', async (req, res) => {
 
   console.log('Call saved successfully');
 
-  // Send email notification if client has a notify email
-  const notifyKey = clientId || 'karnaconnect' if (clientNotifyEmail[notifyKey]) {
-    const notifyEmail = clientNotifyEmail[clientId]
+  // Send email notification
+  if (clientNotifyEmail[notifyKey]) {
+    const notifyEmail = clientNotifyEmail[notifyKey]
+    const businessName = clientName[notifyKey] || 'KarnaConnect'
     const duration = message.durationSeconds ? `${Math.round(message.durationSeconds)}s` : 'Unknown'
     const outcome = message.endedReason || 'Unknown'
     const caller = customer.number || 'Unknown'
@@ -77,7 +85,7 @@ app.post('/webhook/vapi', async (req, res) => {
       <div style="font-family: 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; background: #f8fafc; padding: 20px;">
         <div style="background: linear-gradient(135deg, #2563eb, #06b6d4); border-radius: 12px 12px 0 0; padding: 24px; text-align: center;">
           <h1 style="color: white; margin: 0; font-size: 1.3rem;">⚛ New Call — Mash</h1>
-          <p style="color: rgba(255,255,255,0.8); margin: 6px 0 0; font-size: 0.85rem;">KarnaConnect AI Command Centre</p>
+          <p style="color: rgba(255,255,255,0.8); margin: 6px 0 0; font-size: 0.85rem;">${businessName} · KarnaConnect AI</p>
         </div>
         <div style="background: white; border-radius: 0 0 12px 12px; padding: 28px; border: 1px solid #e2e8f0; border-top: none;">
           <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
@@ -94,13 +102,13 @@ app.post('/webhook/vapi', async (req, res) => {
               <td style="padding: 10px 0; border-bottom: 1px solid #f1f5f9; color: #0f172a; font-weight: 600;">${outcome}</td>
             </tr>
             <tr>
-              <td style="padding: 10px 0; color: #94a3b8; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px;">Time</td>
+              <td style="padding: 10px 0; color: #94a3b8; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px;">Time (AWST)</td>
               <td style="padding: 10px 0; color: #0f172a; font-weight: 600;">${new Date().toLocaleString('en-AU', { timeZone: 'Australia/Perth' })}</td>
             </tr>
           </table>
 
           <div style="background: #f8fafc; border-left: 3px solid #2563eb; border-radius: 0 8px 8px 0; padding: 16px; margin-bottom: 24px;">
-            <p style="color: #2563eb; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin: 0 0 8px;">AI Call Summary</p>
+            <p style="color: #2563eb; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; margin: 0 0 8px;">⚛ AI Call Summary</p>
             <p style="color: #475569; font-size: 0.9rem; line-height: 1.7; margin: 0;">${summary}</p>
           </div>
 
@@ -109,7 +117,7 @@ app.post('/webhook/vapi', async (req, res) => {
           </a>
 
           <p style="text-align: center; color: #94a3b8; font-size: 0.75rem; margin-top: 20px;">
-            Powered by KarnaConnect · AI Command Centre
+            Powered by KarnaConnect · AI Command Centre · South Lake WA 6164
           </p>
         </div>
       </div>
@@ -119,7 +127,7 @@ app.post('/webhook/vapi', async (req, res) => {
       await transporter.sendMail({
         from: process.env.SMTP_FROM,
         to: notifyEmail,
-        subject: `📞 New Call — ${caller} (${duration})`,
+        subject: `📞 New Call — ${caller} (${duration}) · ${businessName}`,
         html: emailHtml
       })
       console.log('Email sent to:', notifyEmail)
