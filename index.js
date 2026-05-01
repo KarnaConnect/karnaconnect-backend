@@ -9,11 +9,9 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
-// Map VAPI phone number IDs to client IDs in your database
-// Add each client's VAPI phone number ID and their Supabase client ID here
 const phoneNumberToClient = {
-  'YOUR_KARNACONNECT_VAPI_PHONE_ID': null, // KarnaConnect — no client_id needed
-  'YOUR_DESCOM_VAPI_PHONE_ID': 'dd674a90-90b5-4f57-9b7b-cced0cb57d89'
+  '75706cd2-0532-405d-b237-77fd2ae9df3a': null,
+  '6e85e01a-8c76-4607-837d-5fdafed4bc69': 'dd674a90-90b5-4f57-9b7b-cced0cb57d89'
 }
 
 app.get('/', (req, res) => {
@@ -33,7 +31,6 @@ app.post('/webhook/vapi', async (req, res) => {
   console.log('Phone Number ID:', phoneNumberId);
   console.log('Caller:', customer.number);
 
-  // Look up which client this call belongs to
   const clientId = phoneNumberToClient[phoneNumberId] || null;
   console.log('Client ID:', clientId);
 
