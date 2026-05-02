@@ -148,6 +148,53 @@ const fullTranscript = message.artifact?.transcript || null;
 
   res.json({ success: true, data });
 });
+app.get('/backfill', async (req, res) => {
+  console.log('Starting backfill...');
 
+  try {
+    const response = await fetch('https://api.vapi.ai/call?limit=100', {
+      headers: {
+        'Authorization': `Bearer ${process.env.VAPI_API_KEY}`
+      }
+    });
+
+    const vapiCalls = await response.json();
+    console.log(`Found ${vapiCalls.length} calls in VAPI`);
+
+    let updated = 0;
+    let skipped = 0;
+
+    for (const call of vapiCalls) {
+      const recordingUrl = call.recordingUrl || call.artifact?.recordingUrl || null;
+      const transcript = call.transcript || call.artifact?.transcript || null;
+      const summary = call.analysis?.summary || null;
+
+      if (!recordingUrl && !transcript && !summary) {
+        skipped++;
+        continue;
+      }
+
+      const { error } = await supabase
+        .from('calls')
+        .update({
+          recording_url: recordingUrl,
+          full_transcript: transcript,
+          call_summary: summary
+        })
+        .eq('vapi_call_id', call.id);
+
+      if (error) {
+        console.log('Error updating call:', call.id, error.message);
+      } else {
+        updated++;
+      }
+    }
+
+    res.json({ success: true, updated, skipped });
+  } catch (err) {
+    console.log('Backfill error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
