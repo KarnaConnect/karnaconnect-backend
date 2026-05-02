@@ -58,6 +58,8 @@ app.post('/webhook/vapi', async (req, res) => {
   console.log('Client ID:', clientId);
   console.log('Caller:', customer.number);
 
+ const fullTranscript = message.artifact?.transcript || null;
+
   const { data, error } = await supabase.from('calls').insert([{
     vapi_call_id: call.id,
     caller_number: customer.number,
@@ -66,7 +68,8 @@ app.post('/webhook/vapi', async (req, res) => {
     call_summary: analysis.summary,
     started_at: call.createdAt,
     ended_at: message.endedAt,
-    client_id: clientId
+    client_id: clientId,
+    full_transcript: fullTranscript
   }]);
 
   if (error) {
