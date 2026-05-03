@@ -80,6 +80,15 @@ const fullTranscript = message.artifact?.transcript || null;
   }
 
   console.log('Call saved successfully');
+  // Update client monthly minutes usage
+  if (clientId && message.durationSeconds) {
+    const minutes = message.durationSeconds / 60;
+    await supabase.rpc('increment_minutes', {
+      client_id_input: clientId,
+      minutes_to_add: minutes
+    });
+    console.log('Minutes updated for client:', clientId, '+', minutes.toFixed(2), 'min');
+  }
 
   if (clientNotifyEmail[notifyKey]) {
     const notifyEmail = clientNotifyEmail[notifyKey];
