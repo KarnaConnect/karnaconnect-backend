@@ -96,34 +96,13 @@ app.post('/webhook/vapi', async (req, res) => {
     const caller = customer.number || 'Unknown';
     const summary = analysis.summary || 'No summary available';
 
-    const emailHtml = `
-      <div style="font-family:'Segoe UI',sans-serif; max-width:600px; margin:0 auto; background:#f8fafc; padding:20px;">
-        <div style="background:linear-gradient(135deg,#2563eb,#06b6d4); border-radius:12px 12px 0 0; padding:24px; text-align:center;">
-          <h1 style="color:white; margin:0; font-size:1.3rem;">New Call — Mash</h1>
-          <p style="color:rgba(255,255,255,0.8); margin:6px 0 0; font-size:0.85rem;">${businessName} · KarnaConnect AI</p>
-        </div>
-        <div style="background:white; border-radius:0 0 12px 12px; padding:28px; border:1px solid #e2e8f0; border-top:none;">
-          <table style="width:100%; border-collapse:collapse; margin-bottom:20px;">
-            <tr><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#94a3b8; font-size:0.8rem; text-transform:uppercase; width:40%;">Caller</td><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${caller}</td></tr>
-            <tr><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#94a3b8; font-size:0.8rem; text-transform:uppercase;">Duration</td><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${duration}</td></tr>
-            <tr><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#94a3b8; font-size:0.8rem; text-transform:uppercase;">Outcome</td><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${outcome}</td></tr>
-            <tr><td style="padding:10px 0; color:#94a3b8; font-size:0.8rem; text-transform:uppercase;">Time (AWST)</td><td style="padding:10px 0; color:#0f172a; font-weight:600;">${new Date().toLocaleString('en-AU', { timeZone: 'Australia/Perth' })}</td></tr>
-          </table>
-          <div style="background:#f8fafc; border-left:3px solid #2563eb; border-radius:0 8px 8px 0; padding:16px; margin-bottom:24px;">
-            <p style="color:#2563eb; font-size:0.7rem; text-transform:uppercase; letter-spacing:1px; font-weight:700; margin:0 0 8px;">AI Call Summary</p>
-            <p style="color:#475569; font-size:0.9rem; line-height:1.7; margin:0;">${summary}</p>
-          </div>
-          <a href="https://dashboard.karnaconnect.com.au" style="display:block; text-align:center; background:linear-gradient(135deg,#2563eb,#06b6d4); color:white; padding:13px 20px; border-radius:8px; text-decoration:none; font-weight:700; font-size:0.9rem;">View Full Dashboard</a>
-          <p style="text-align:center; color:#94a3b8; font-size:0.75rem; margin-top:20px;">Powered by KarnaConnect · AI Command Centre · South Lake WA 6164</p>
-        </div>
-      </div>
-    `;
+    const emailHtml = '<div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;background:#f8fafc;padding:20px;"><div style="background:linear-gradient(135deg,#2563eb,#06b6d4);border-radius:12px 12px 0 0;padding:24px;text-align:center;"><h1 style="color:white;margin:0;font-size:1.3rem;">New Call - Mash</h1><p style="color:rgba(255,255,255,0.8);margin:6px 0 0;font-size:0.85rem;">' + businessName + ' - KarnaConnect AI</p></div><div style="background:white;border-radius:0 0 12px 12px;padding:28px;border:1px solid #e2e8f0;border-top:none;"><p><strong>Caller:</strong> ' + caller + '</p><p><strong>Duration:</strong> ' + duration + '</p><p><strong>Outcome:</strong> ' + outcome + '</p><p><strong>Summary:</strong> ' + summary + '</p><a href="https://dashboard.karnaconnect.com.au" style="display:block;text-align:center;background:linear-gradient(135deg,#2563eb,#06b6d4);color:white;padding:13px 20px;border-radius:8px;text-decoration:none;font-weight:700;margin-top:20px;">View Dashboard</a></div></div>';
 
     try {
       const result = await transporter.sendMail({
         from: process.env.SMTP_FROM,
         to: notifyEmail,
-        subject: `New Call - ${caller} (${duration}) - ${businessName}`,
+        subject: 'New Call - ' + caller + ' (' + duration + ') - ' + businessName,
         html: emailHtml
       });
       console.log('Email sent successfully:', result.messageId);
@@ -139,10 +118,10 @@ app.get('/backfill', async (req, res) => {
   console.log('Starting backfill...');
   try {
     const response = await fetch('https://api.vapi.ai/call?limit=100', {
-      headers: { 'Authorization': `Bearer ${process.env.VAPI_API_KEY}` }
+      headers: { 'Authorization': 'Bearer ' + process.env.VAPI_API_KEY }
     });
     const vapiCalls = await response.json();
-    console.log(`Found ${vapiCalls.length} calls in VAPI`);
+    console.log('Found ' + vapiCalls.length + ' calls in VAPI');
     let updated = 0;
     let skipped = 0;
     for (const call of vapiCalls) {
@@ -167,29 +146,12 @@ app.get('/backfill', async (req, res) => {
 
 app.post('/notify-onboard', async (req, res) => {
   const { business_name, contact_name, contact_email, contact_phone, plan_name, agent_name, vapi_agent_id } = req.body;
-  const emailHtml = `
-    <div style="font-family:'Segoe UI',sans-serif; max-width:600px; margin:0 auto; background:#f8fafc; padding:20px;">
-      <div style="background:linear-gradient(135deg,#2563eb,#06b6d4); border-radius:12px 12px 0 0; padding:24px; text-align:center;">
-        <h1 style="color:white; margin:0; font-size:1.3rem;">New Client Onboarded</h1>
-      </div>
-      <div style="background:white; border-radius:0 0 12px 12px; padding:28px; border:1px solid #e2e8f0; border-top:none;">
-        <table style="width:100%; border-collapse:collapse; margin-bottom:20px;">
-          <tr><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#94a3b8; font-size:0.8rem; width:40%;">Business</td><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${business_name}</td></tr>
-          <tr><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#94a3b8; font-size:0.8rem;">Contact</td><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${contact_name}</td></tr>
-          <tr><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#94a3b8; font-size:0.8rem;">Email</td><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${contact_email}</td></tr>
-          <tr><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#94a3b8; font-size:0.8rem;">Phone</td><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${contact_phone}</td></tr>
-          <tr><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#94a3b8; font-size:0.8rem;">Plan</td><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${plan_name}</td></tr>
-          <tr><td style="padding:10px 0; color:#94a3b8; font-size:0.8rem;">VAPI ID</td><td style="padding:10px 0; color:#0f172a; font-weight:600; font-family:monospace; font-size:0.8rem;">${vapi_agent_id}</td></tr>
-        </table>
-        <a href="https://dashboard.vapi.ai" style="display:block; text-align:center; background:linear-gradient(135deg,#2563eb,#06b6d4); color:white; padding:13px 20px; border-radius:8px; text-decoration:none; font-weight:700;">Review Agent in VAPI</a>
-      </div>
-    </div>
-  `;
+  const emailHtml = '<div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;padding:20px;"><h2>New Client Onboarded</h2><p><strong>Business:</strong> ' + business_name + '</p><p><strong>Contact:</strong> ' + contact_name + '</p><p><strong>Email:</strong> ' + contact_email + '</p><p><strong>Phone:</strong> ' + contact_phone + '</p><p><strong>Plan:</strong> ' + plan_name + '</p><p><strong>Agent:</strong> ' + agent_name + '</p><p><strong>VAPI ID:</strong> ' + vapi_agent_id + '</p><a href="https://dashboard.vapi.ai">Review Agent in VAPI</a></div>';
   try {
     await transporter.sendMail({
       from: process.env.SMTP_FROM,
       to: 'info@karnaconnect.com.au',
-      subject: `New Client — ${business_name} (${plan_name} Plan)`,
+      subject: 'New Client - ' + business_name + ' (' + plan_name + ' Plan)',
       html: emailHtml
     });
     res.json({ success: true });
@@ -209,39 +171,37 @@ app.post('/create-agent', async (req, res) => {
 
   console.log('Creating VAPI agent for:', business_name);
 
-  const systemPrompt = 'CRITICAL RULE: You must ask only ONE question at a time.\n\nYou are ' + agent_name + ', a friendly AI assistant for ' + business_name + '. Your goal is to: ' + (agent_goal || 'answer enquiries and capture caller details') + '\n\nCollect caller details one at a time: full name, phone number, email, and enquiry details.\n\nAlways use Australian English.';
+  const systemPrompt = 'CRITICAL RULE: You must ask only ONE question at a time. Never combine multiple questions in a single response.\n\n'
+    + 'You are ' + agent_name + ', a friendly and professional AI assistant for ' + business_name
+    + (industry ? ' — a ' + industry + ' business' : '') + '.'
+    + (business_description ? ' ' + business_description : '') + '\n\n'
+    + (services ? 'Services offered:\n' + services + '\n\n' : '')
+    + (service_area ? 'Service area: ' + service_area + '\n\n' : '')
+    + (business_hours ? 'Business hours: ' + business_hours + '\n\n' : '')
+    + 'Your main goal is to: ' + (agent_goal || 'answer enquiries and capture caller details for the team to follow up') + '\n\n'
+    + 'When someone calls:\n'
+    + '- Warmly greet the caller and introduce yourself as ' + agent_name + ' from ' + business_name + '\n'
+    + '- Understand what they need and help them accordingly\n'
+    + '- Collect their details one at a time: full name, best contact number, email, and the nature of their enquiry\n'
+    + '- Let them know the team will be in touch as soon as possible\n\n'
+    + (after_hours ? 'After hours: ' + after_hours : 'If after hours, let callers know the team will contact them next business day.') + '\n'
+    + (tone ? 'Tone: ' + tone : 'Be warm, professional and conversational.') + '\n'
+    + (always_say ? 'Always mention: ' + always_say + '\n' : '')
+    + (never_say ? 'Never say: ' + never_say + '\n' : '')
+    + (faqs ? 'FAQs:\n' + faqs + '\n' : '')
+    + '\nAlways use Australian English.';
 
-You are ${agent_name}, a friendly and professional AI assistant for ${business_name}${industry ? ` — a ${industry} business` : ''}.${business_description ? ` ${business_description}` : ''}
-
-${services ? `Services offered:\n${services}` : ''}
-${service_area ? `Service area: ${service_area}` : ''}
-${business_hours ? `Business hours: ${business_hours}` : ''}
-
-Your main goal is to: ${agent_goal || 'answer enquiries and capture caller details for the team to follow up'}
-
-When someone calls:
-- Warmly greet the caller and introduce yourself as ${agent_name} from ${business_name}
-- Understand what they need and help them accordingly
-- Collect their details one at a time: full name, best contact number, email, and the nature of their enquiry
-- Let them know the team will be in touch as soon as possible
-
-${after_hours ? `After hours: ${after_hours}` : 'If after hours, let callers know the team will contact them next business day.'}
-${tone ? `Tone: ${tone}` : 'Be warm, professional and conversational.'}
-${always_say ? `Always mention: ${always_say}` : ''}
-${never_say ? `Never say: ${never_say}` : ''}
-${faqs ? `FAQs:\n${faqs}` : ''}
-
-Always use Australian English.`;
+  const agentName = (business_name + ' ' + agent_name).substring(0, 38);
 
   try {
     const vapiResponse = await fetch('https://api.vapi.ai/assistant', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.VAPI_API_KEY}`,
+        'Authorization': 'Bearer ' + process.env.VAPI_API_KEY,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        name: `${business_name} — ${agent_name} (DRAFT)`,
+        name: agentName,
         model: {
           provider: 'openai',
           model: 'gpt-4.1',
@@ -255,7 +215,7 @@ Always use Australian English.`;
           similarityBoost: 0.75,
           speed: 1.1
         },
-        firstMessage: `Thanks for calling ${business_name}. I'm ${agent_name}, your AI assistant. How can I help you today?`,
+        firstMessage: 'Thanks for calling ' + business_name + '. I am ' + agent_name + ', your AI assistant. How can I help you today?',
         transcriber: {
           provider: 'deepgram',
           model: 'flux-general-en',
@@ -277,43 +237,13 @@ Always use Australian English.`;
       console.log('Client updated with VAPI agent ID');
     }
 
-    // Send notification email — non-fatal
-    const emailHtml = `
-      <div style="font-family:'Segoe UI',sans-serif; max-width:600px; margin:0 auto; background:#f8fafc; padding:20px;">
-        <div style="background:linear-gradient(135deg,#2563eb,#06b6d4); border-radius:12px 12px 0 0; padding:24px; text-align:center;">
-          <h1 style="color:white; margin:0; font-size:1.3rem;">⚛ New Client Onboarded</h1>
-          <p style="color:rgba(255,255,255,0.8); margin:6px 0 0; font-size:0.85rem;">KarnaConnect AI Command Centre</p>
-        </div>
-        <div style="background:white; border-radius:0 0 12px 12px; padding:28px; border:1px solid #e2e8f0; border-top:none;">
-          <table style="width:100%; border-collapse:collapse; margin-bottom:20px;">
-            <tr><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#94a3b8; font-size:0.8rem; width:40%;">Business</td><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${business_name}</td></tr>
-            <tr><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#94a3b8; font-size:0.8rem;">Contact</td><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${contact_name}</td></tr>
-            <tr><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#94a3b8; font-size:0.8rem;">Email</td><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${contact_email}</td></tr>
-            <tr><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#94a3b8; font-size:0.8rem;">Phone</td><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${contact_phone}</td></tr>
-            <tr><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#94a3b8; font-size:0.8rem;">Plan</td><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${plan_name}</td></tr>
-            <tr><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#94a3b8; font-size:0.8rem;">Agent</td><td style="padding:10px 0; border-bottom:1px solid #f1f5f9; color:#0f172a; font-weight:600;">${agent_name}</td></tr>
-            <tr><td style="padding:10px 0; color:#94a3b8; font-size:0.8rem;">VAPI ID</td><td style="padding:10px 0; color:#0f172a; font-weight:600; font-family:monospace; font-size:0.8rem;">${vapiAgent.id || 'Failed to create'}</td></tr>
-          </table>
-          <div style="background:#f8fafc; border-left:3px solid #2563eb; border-radius:0 8px 8px 0; padding:16px; margin-bottom:24px;">
-            <p style="color:#2563eb; font-size:0.7rem; text-transform:uppercase; letter-spacing:1px; font-weight:700; margin:0 0 8px;">Next Steps</p>
-            <p style="color:#475569; font-size:0.875rem; line-height:1.7; margin:0;">
-              1. Review the draft VAPI agent in your VAPI dashboard<br/>
-              2. Assign a Twilio phone number to the agent<br/>
-              3. Test the agent with a call<br/>
-              4. Create login credentials for the client in Supabase<br/>
-              5. Send the client their welcome email
-            </p>
-          </div>
-          <a href="https://dashboard.vapi.ai" style="display:block; text-align:center; background:linear-gradient(135deg,#2563eb,#06b6d4); color:white; padding:13px 20px; border-radius:8px; text-decoration:none; font-weight:700; font-size:0.9rem;">Review Agent in VAPI →</a>
-        </div>
-      </div>
-    `;
+    const emailHtml = '<div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;padding:20px;"><h2>New Client Onboarded</h2><p><strong>Business:</strong> ' + business_name + '</p><p><strong>Contact:</strong> ' + contact_name + '</p><p><strong>Email:</strong> ' + contact_email + '</p><p><strong>Phone:</strong> ' + contact_phone + '</p><p><strong>Plan:</strong> ' + plan_name + '</p><p><strong>Agent:</strong> ' + agent_name + '</p><p><strong>VAPI ID:</strong> ' + (vapiAgent.id || 'Failed to create') + '</p><br><p>Next steps: Review agent in VAPI, assign Twilio number, test call, create client login.</p><a href="https://dashboard.vapi.ai">Review Agent in VAPI</a></div>';
 
     try {
       await transporter.sendMail({
         from: process.env.SMTP_FROM,
         to: 'info@karnaconnect.com.au',
-        subject: `⚛ New Client — ${business_name} (${plan_name} Plan)`,
+        subject: 'New Client - ' + business_name + ' (' + plan_name + ' Plan)',
         html: emailHtml
       });
       console.log('Notification email sent');
