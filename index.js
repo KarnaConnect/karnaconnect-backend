@@ -323,6 +323,7 @@ Always use Australian English.`
     })
 
     const vapiAgent = await vapiResponse.json()
+    console.log('VAPI full response:', JSON.stringify(vapiAgent))
     console.log('VAPI agent created:', vapiAgent.id)
 
     await supabase.from('clients').update({
