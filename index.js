@@ -209,7 +209,7 @@ app.post('/create-agent', async (req, res) => {
 
   console.log('Creating VAPI agent for:', business_name);
 
-  const systemPrompt = `CRITICAL RULE: You must ask only ONE question at a time. Never combine multiple questions in a single response.
+  const systemPrompt = 'CRITICAL RULE: You must ask only ONE question at a time.\n\nYou are ' + agent_name + ', a friendly AI assistant for ' + business_name + '. Your goal is to: ' + (agent_goal || 'answer enquiries and capture caller details') + '\n\nCollect caller details one at a time: full name, phone number, email, and enquiry details.\n\nAlways use Australian English.';
 
 You are ${agent_name}, a friendly and professional AI assistant for ${business_name}${industry ? ` — a ${industry} business` : ''}.${business_description ? ` ${business_description}` : ''}
 
