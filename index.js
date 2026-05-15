@@ -258,6 +258,61 @@ app.post('/create-agent', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+app.post('/webhook/stripe', express.raw({type: 'application/json'}), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
 
+  try {
+    const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.log('Stripe webhook error:', err.message);
+    return res.status(400).json({ error: err.message });
+  }
+
+  console.log('Stripe event:', event.type);
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const clientId = session.metadata?.client_id;
+    const businessName = session.metadata?.business_name;
+    const planName = session.metadata?.plan_name;
+    const customerEmail = session.customer_email;
+
+    console.log('Payment completed for:', businessName, clientId);
+
+    if (clientId) {
+      // Activate client in Supabase
+      const { error } = await supabase.from('clients').update({
+        active: true,
+        stripe_customer_id: session.customer,
+        stripe_subscription_id: session.subscription
+      }).eq('id', clientId);
+
+      if (error) {
+        console.log('Error activating client:', error.message);
+      } else {
+        console.log('Client activated:', clientId);
+      }
+    }
+  }
+
+  if (event.type === 'customer.subscription.deleted') {
+    const subscription = event.data.object;
+    console.log('Subscription cancelled:', subscription.id);
+
+    const { error } = await supabase.from('clients')
+      .update({ active: false })
+      .eq('stripe_subscription_id', subscription.id);
+
+    if (error) {
+      console.log('Error deactivating client:', error.message);
+    } else {
+      console.log('Client deactivated');
+    }
+  }
+
+  res.json({ received: true });
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
