@@ -312,6 +312,36 @@ app.post('/webhook/stripe', express.raw({type: 'application/json'}), async (req,
     }
   }
 
+  if (event.type === 'invoice.payment_failed') {
+    const invoice = event.data.object;
+    console.log('Payment failed for subscription:', invoice.subscription);
+
+    const { error } = await supabase.from('clients')
+      .update({ active: false })
+      .eq('stripe_subscription_id', invoice.subscription);
+
+    if (error) {
+      console.log('Error deactivating client on payment failure:', error.message);
+    } else {
+      console.log('Client deactivated due to payment failure');
+    }
+  }
+
+  if (event.type === 'invoice.payment_succeeded') {
+    const invoice = event.data.object;
+    console.log('Payment succeeded for subscription:', invoice.subscription);
+
+    const { error } = await supabase.from('clients')
+      .update({ active: true })
+      .eq('stripe_subscription_id', invoice.subscription);
+
+    if (error) {
+      console.log('Error reactivating client:', error.message);
+    } else {
+      console.log('Client reactivated after successful payment');
+    }
+  }
+
   res.json({ received: true });
 });
 const PORT = process.env.PORT || 3000;
