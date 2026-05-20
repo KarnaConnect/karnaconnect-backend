@@ -22,19 +22,39 @@ const transporter = nodemailer.createTransport({
   tls: { rejectUnauthorized: false }
 });
 
-const phoneNumberToClient = {
-  '75706cd2-0532-405d-b237-77fd2ae9df3a': null,
-  '6e85e01a-8c76-4607-837d-5fdafed4bc69': 'dd674a90-90b5-4f57-9b7b-cced0cb57d89'
+async function getClientIdFromPhoneNumberId(phoneNumberId) {
+  if (!phoneNumberId) return null
+  
+  // Check if it's the KarnaConnect number
+  if (phoneNumberId === '75706cd2-0532-405d-b237-77fd2ae9df3a') return null
+  
+  // Look up client by vapi_phone_number_id in Supabase
+  const { data, error } = await supabase
+    .from('clients')
+    .select('id')
+    .eq('vapi_phone_number_id', phoneNumberId)
+    .single()
+  
+  if (error || !data) {
+    console.log('No client found for phone number ID:', phoneNumberId)
+    return null
+  }
+  
+  return data.id
 }
 
-const clientNotifyEmail = {
-  'karnaconnect': 'info@karnaconnect.com.au',
-  'dd674a90-90b5-4f57-9b7b-cced0cb57d89': 'syed@descomconsultant.com.au'
-}
-
-const clientNames = {
-  'karnaconnect': 'KarnaConnect',
-  'dd674a90-90b5-4f57-9b7b-cced0cb57d89': 'Descom Consultants'
+async function getClientDetails(clientId) {
+  if (!clientId) return { email: 'info@karnaconnect.com.au', name: 'KarnaConnect' }
+  
+  const { data, error } = await supabase
+    .from('clients')
+    .select('business_name, contact_email')
+    .eq('id', clientId)
+    .single()
+  
+  if (error || !data) return { email: 'info@karnaconnect.com.au', name: 'KarnaConnect' }
+  
+  return { email: data.contact_email, name: data.business_name }
 }
 
 app.get('/', (req, res) => {
@@ -51,7 +71,7 @@ app.post('/webhook/vapi', async (req, res) => {
   const customer = message.customer || call.customer || {};
   const phoneNumberId = call.phoneNumberId;
 
-  const clientId = phoneNumberToClient[phoneNumberId] || null;
+  const clientId = await getClientIdFromPhoneNumberId(phoneNumberId)
   const notifyKey = clientId || 'karnaconnect';
   console.log('Client ID:', clientId);
   console.log('Caller:', customer.number);
@@ -88,9 +108,10 @@ app.post('/webhook/vapi', async (req, res) => {
     console.log('Minutes updated for client:', clientId, '+', minutes.toFixed(2), 'min');
   }
 
-  if (clientNotifyEmail[notifyKey]) {
-    const notifyEmail = clientNotifyEmail[notifyKey];
-    const businessName = clientNames[notifyKey] || 'KarnaConnect';
+  const clientDetails = await getClientDetails(clientId)
+  const notifyEmail = clientDetails.email
+  const businessName = clientDetails.name
+  if (notifyEmail) {
     const duration = message.durationSeconds ? `${Math.round(message.durationSeconds)}s` : 'Unknown';
     const outcome = message.endedReason || 'Unknown';
     const caller = customer.number || 'Unknown';
