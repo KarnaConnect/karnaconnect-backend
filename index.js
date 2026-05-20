@@ -24,36 +24,33 @@ const transporter = nodemailer.createTransport({
 
 async function getClientIdFromPhoneNumberId(phoneNumberId) {
   if (!phoneNumberId) return null
-  
-  // Check if it's the KarnaConnect number
   if (phoneNumberId === '75706cd2-0532-405d-b237-77fd2ae9df3a') return null
-  
-  // Look up client by vapi_phone_number_id in Supabase
+
   const { data, error } = await supabase
     .from('clients')
     .select('id')
     .eq('vapi_phone_number_id', phoneNumberId)
     .single()
-  
+
   if (error || !data) {
     console.log('No client found for phone number ID:', phoneNumberId)
     return null
   }
-  
+
   return data.id
 }
 
 async function getClientDetails(clientId) {
   if (!clientId) return { email: 'info@karnaconnect.com.au', name: 'KarnaConnect' }
-  
+
   const { data, error } = await supabase
     .from('clients')
     .select('business_name, contact_email')
     .eq('id', clientId)
     .single()
-  
+
   if (error || !data) return { email: 'info@karnaconnect.com.au', name: 'KarnaConnect' }
-  
+
   return { email: data.contact_email, name: data.business_name }
 }
 
@@ -72,7 +69,6 @@ app.post('/webhook/vapi', async (req, res) => {
   const phoneNumberId = call.phoneNumberId;
 
   const clientId = await getClientIdFromPhoneNumberId(phoneNumberId)
-  const notifyKey = clientId || 'karnaconnect';
   console.log('Client ID:', clientId);
   console.log('Caller:', customer.number);
 
@@ -111,22 +107,23 @@ app.post('/webhook/vapi', async (req, res) => {
   const clientDetails = await getClientDetails(clientId)
   const notifyEmail = clientDetails.email
   const businessName = clientDetails.name
+
   if (notifyEmail) {
     const duration = message.durationSeconds ? `${Math.round(message.durationSeconds)}s` : 'Unknown';
     const outcome = message.endedReason || 'Unknown';
     const caller = customer.number || 'Unknown';
     const summary = analysis.summary || 'No summary available';
 
-    const emailHtml = '<div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;background:#f8fafc;padding:20px;"><div style="background:linear-gradient(135deg,#2563eb,#06b6d4);border-radius:12px 12px 0 0;padding:24px;text-align:center;"><h1 style="color:white;margin:0;font-size:1.3rem;">New Call - Mash</h1><p style="color:rgba(255,255,255,0.8);margin:6px 0 0;font-size:0.85rem;">' + businessName + ' - KarnaConnect AI</p></div><div style="background:white;border-radius:0 0 12px 12px;padding:28px;border:1px solid #e2e8f0;border-top:none;"><p><strong>Caller:</strong> ' + caller + '</p><p><strong>Duration:</strong> ' + duration + '</p><p><strong>Outcome:</strong> ' + outcome + '</p><p><strong>Summary:</strong> ' + summary + '</p><a href="https://dashboard.karnaconnect.com.au" style="display:block;text-align:center;background:linear-gradient(135deg,#2563eb,#06b6d4);color:white;padding:13px 20px;border-radius:8px;text-decoration:none;font-weight:700;margin-top:20px;">View Dashboard</a></div></div>';
+    const emailHtml = '<div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;background:#f8fafc;padding:20px;"><div style="background:linear-gradient(135deg,#534AB7,#7F77DD);border-radius:12px 12px 0 0;padding:24px;text-align:center;"><h1 style="color:white;margin:0;font-size:1.3rem;">New Call — Mash</h1><p style="color:rgba(255,255,255,0.8);margin:6px 0 0;font-size:0.85rem;">' + businessName + '</p></div><div style="background:white;border-radius:0 0 12px 12px;padding:28px;border:1px solid #e2e8f0;border-top:none;"><p><strong>Caller:</strong> ' + caller + '</p><p><strong>Duration:</strong> ' + duration + '</p><p><strong>Outcome:</strong> ' + outcome + '</p><p><strong>Summary:</strong> ' + summary + '</p><a href="https://mashboard.karnaconnect.com.au" style="display:block;text-align:center;background:linear-gradient(135deg,#534AB7,#7F77DD);color:white;padding:13px 20px;border-radius:8px;text-decoration:none;font-weight:700;margin-top:20px;">View Dashboard</a></div></div>';
 
     try {
-      const result = await transporter.sendMail({
+      await transporter.sendMail({
         from: process.env.SMTP_FROM,
         to: notifyEmail,
         subject: 'New Call - ' + caller + ' (' + duration + ') - ' + businessName,
         html: emailHtml
       });
-      console.log('Email sent successfully:', result.messageId);
+      console.log('Email sent successfully');
     } catch (emailError) {
       console.log('Email error:', emailError.message);
     }
@@ -187,7 +184,7 @@ app.post('/create-agent', async (req, res) => {
     client_id, business_name, industry, contact_name, contact_email,
     contact_phone, agent_name, business_description, services,
     service_area, business_hours, after_hours, agent_goal,
-    tone, always_say, never_say, faqs, plan_name
+    tone, always_say, never_say, faqs, plan_name, vapi_phone_number_id
   } = req.body;
 
   console.log('Creating VAPI agent for:', business_name);
@@ -252,21 +249,13 @@ app.post('/create-agent', async (req, res) => {
     console.log('VAPI agent ID:', vapiAgent.id);
 
     if (vapiAgent.id) {
-      await supabase.from('clients').update({
-        vapi_agent_id: vapiAgent.id
-      }).eq('id', client_id);
+      const updateData = { vapi_agent_id: vapiAgent.id }
+      if (vapi_phone_number_id) updateData.vapi_phone_number_id = vapi_phone_number_id
+      await supabase.from('clients').update(updateData).eq('id', client_id);
       console.log('Client updated with VAPI agent ID');
     }
 
-    // If a phone number ID was provided, save it
-    if (req.body.vapi_phone_number_id) {
-      await supabase.from('clients').update({
-        vapi_phone_number_id: req.body.vapi_phone_number_id
-      }).eq('id', client_id);
-      console.log('Client updated with VAPI phone number ID');
-    }
-
-    const emailHtml = '<div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;padding:20px;"><h2>New Client Onboarded</h2><p><strong>Business:</strong> ' + business_name + '</p><p><strong>Contact:</strong> ' + contact_name + '</p><p><strong>Email:</strong> ' + contact_email + '</p><p><strong>Phone:</strong> ' + contact_phone + '</p><p><strong>Plan:</strong> ' + plan_name + '</p><p><strong>Agent:</strong> ' + agent_name + '</p><p><strong>VAPI ID:</strong> ' + (vapiAgent.id || 'Failed to create') + '</p><br><p>Next steps: Review agent in VAPI, assign Twilio number, test call, create client login.</p><a href="https://dashboard.vapi.ai">Review Agent in VAPI</a></div>';
+    const emailHtml = '<div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;padding:20px;"><h2>New Client Onboarded</h2><p><strong>Business:</strong> ' + business_name + '</p><p><strong>Contact:</strong> ' + contact_name + '</p><p><strong>Email:</strong> ' + contact_email + '</p><p><strong>Phone:</strong> ' + contact_phone + '</p><p><strong>Plan:</strong> ' + plan_name + '</p><p><strong>Agent:</strong> ' + agent_name + '</p><p><strong>VAPI ID:</strong> ' + (vapiAgent.id || 'Failed') + '</p><br><p>Next steps: Review agent in VAPI, assign Twilio number, update vapi_phone_number_id in Supabase, test call, create client login.</p><a href="https://dashboard.vapi.ai">Review Agent in VAPI</a></div>';
 
     try {
       await transporter.sendMail({
@@ -287,6 +276,7 @@ app.post('/create-agent', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 app.post('/webhook/stripe', express.raw({type: 'application/json'}), async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
@@ -305,73 +295,38 @@ app.post('/webhook/stripe', express.raw({type: 'application/json'}), async (req,
     const session = event.data.object;
     const clientId = session.metadata?.client_id;
     const businessName = session.metadata?.business_name;
-    const planName = session.metadata?.plan_name;
-    const customerEmail = session.customer_email;
-
     console.log('Payment completed for:', businessName, clientId);
 
     if (clientId) {
-      // Activate client in Supabase
-      const { error } = await supabase.from('clients').update({
+      await supabase.from('clients').update({
         active: true,
         stripe_customer_id: session.customer,
         stripe_subscription_id: session.subscription
       }).eq('id', clientId);
-
-      if (error) {
-        console.log('Error activating client:', error.message);
-      } else {
-        console.log('Client activated:', clientId);
-      }
+      console.log('Client activated:', clientId);
     }
   }
 
   if (event.type === 'customer.subscription.deleted') {
     const subscription = event.data.object;
-    console.log('Subscription cancelled:', subscription.id);
-
-    const { error } = await supabase.from('clients')
-      .update({ active: false })
-      .eq('stripe_subscription_id', subscription.id);
-
-    if (error) {
-      console.log('Error deactivating client:', error.message);
-    } else {
-      console.log('Client deactivated');
-    }
+    await supabase.from('clients').update({ active: false }).eq('stripe_subscription_id', subscription.id);
+    console.log('Client deactivated - subscription cancelled');
   }
 
   if (event.type === 'invoice.payment_failed') {
     const invoice = event.data.object;
-    console.log('Payment failed for subscription:', invoice.subscription);
-
-    const { error } = await supabase.from('clients')
-      .update({ active: false })
-      .eq('stripe_subscription_id', invoice.subscription);
-
-    if (error) {
-      console.log('Error deactivating client on payment failure:', error.message);
-    } else {
-      console.log('Client deactivated due to payment failure');
-    }
+    await supabase.from('clients').update({ active: false }).eq('stripe_subscription_id', invoice.subscription);
+    console.log('Client deactivated - payment failed');
   }
 
   if (event.type === 'invoice.payment_succeeded') {
     const invoice = event.data.object;
-    console.log('Payment succeeded for subscription:', invoice.subscription);
-
-    const { error } = await supabase.from('clients')
-      .update({ active: true })
-      .eq('stripe_subscription_id', invoice.subscription);
-
-    if (error) {
-      console.log('Error reactivating client:', error.message);
-    } else {
-      console.log('Client reactivated after successful payment');
-    }
+    await supabase.from('clients').update({ active: true }).eq('stripe_subscription_id', invoice.subscription);
+    console.log('Client reactivated - payment succeeded');
   }
 
   res.json({ received: true });
 });
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
