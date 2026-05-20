@@ -258,6 +258,14 @@ app.post('/create-agent', async (req, res) => {
       console.log('Client updated with VAPI agent ID');
     }
 
+    // If a phone number ID was provided, save it
+    if (req.body.vapi_phone_number_id) {
+      await supabase.from('clients').update({
+        vapi_phone_number_id: req.body.vapi_phone_number_id
+      }).eq('id', client_id);
+      console.log('Client updated with VAPI phone number ID');
+    }
+
     const emailHtml = '<div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;padding:20px;"><h2>New Client Onboarded</h2><p><strong>Business:</strong> ' + business_name + '</p><p><strong>Contact:</strong> ' + contact_name + '</p><p><strong>Email:</strong> ' + contact_email + '</p><p><strong>Phone:</strong> ' + contact_phone + '</p><p><strong>Plan:</strong> ' + plan_name + '</p><p><strong>Agent:</strong> ' + agent_name + '</p><p><strong>VAPI ID:</strong> ' + (vapiAgent.id || 'Failed to create') + '</p><br><p>Next steps: Review agent in VAPI, assign Twilio number, test call, create client login.</p><a href="https://dashboard.vapi.ai">Review Agent in VAPI</a></div>';
 
     try {
