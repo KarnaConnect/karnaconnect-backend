@@ -24,7 +24,6 @@ const transporter = nodemailer.createTransport({
 
 async function getClientIdFromPhoneNumberId(phoneNumberId) {
   if (!phoneNumberId) return null
-  if (phoneNumberId === '75706cd2-0532-405d-b237-77fd2ae9df3a') return null
 
   const { data, error } = await supabase
     .from('clients')
