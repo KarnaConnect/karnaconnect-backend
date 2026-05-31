@@ -1,6 +1,7 @@
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 const nodemailer = require('nodemailer');
+const admin = require('firebase-admin');
 
 const app = express();
 app.use(express.json());
@@ -9,6 +10,17 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON_KEY
 );
+
+// Initialize Firebase Admin
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n')
+    })
+  });
+}
 
 const transporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
@@ -51,6 +63,39 @@ async function getClientDetails(clientId) {
   if (error || !data) return { email: 'info@karnaconnect.com.au', name: 'KarnaConnect' }
 
   return { email: data.contact_email, name: data.business_name }
+}
+
+async function sendPushNotification(clientId, title, body, url) {
+  try {
+    const { data: tokens, error } = await supabase
+      .from('device_tokens')
+      .select('token')
+      .eq('client_id', clientId)
+
+    if (error || !tokens || tokens.length === 0) {
+      console.log('No device tokens found for client:', clientId)
+      return
+    }
+
+    for (const { token } of tokens) {
+      try {
+        await admin.messaging().send({
+          notification: { title, body },
+          data: { url: url || 'https://dashboard.mashai.com.au' },
+          token
+        })
+        console.log('Push notification sent successfully')
+      } catch (err) {
+        console.log('Error sending push notification:', err.message)
+        if (err.code === 'messaging/registration-token-not-registered') {
+          await supabase.from('device_tokens').delete().eq('token', token)
+          console.log('Removed invalid token')
+        }
+      }
+    }
+  } catch (err) {
+    console.log('Push notification error:', err.message)
+  }
 }
 
 app.get('/', (req, res) => {
@@ -101,6 +146,20 @@ app.post('/webhook/vapi', async (req, res) => {
       minutes_to_add: minutes
     });
     console.log('Minutes updated for client:', clientId, '+', minutes.toFixed(2), 'min');
+  }
+
+  // Send push notification
+  if (clientId) {
+    const caller = customer.number || 'Unknown'
+    const summary = analysis.summary
+      ? analysis.summary.substring(0, 100) + '...'
+      : 'New call handled by Mash'
+    await sendPushNotification(
+      clientId,
+      '📞 New call from ' + caller,
+      summary,
+      'https://dashboard.mashai.com.au'
+    )
   }
 
   const clientDetails = await getClientDetails(clientId)
@@ -295,7 +354,6 @@ app.post('/webhook/stripe', express.raw({type: 'application/json'}), async (req,
     const clientId = session.metadata?.client_id;
     const businessName = session.metadata?.business_name;
     console.log('Payment completed for:', businessName, clientId);
-
     if (clientId) {
       await supabase.from('clients').update({
         active: true,
