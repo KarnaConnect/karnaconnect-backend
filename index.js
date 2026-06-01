@@ -298,7 +298,10 @@ app.post('/create-agent', async (req, res) => {
           language: 'en'
         },
         serverMessages: ['end-of-call-report'],
-        clientMessages: ['transcript']
+        clientMessages: ['transcript'],
+        server: {
+          url: 'https://expressjs-production-48b3.up.railway.app/webhook/vapi'
+        }
       })
     });
 
