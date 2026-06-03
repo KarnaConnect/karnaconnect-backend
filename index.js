@@ -364,13 +364,101 @@ app.post('/webhook/stripe', express.raw({type: 'application/json'}), async (req,
     const clientId = session.metadata?.client_id;
     const businessName = session.metadata?.business_name;
     console.log('Payment completed for:', businessName, clientId);
+
     if (clientId) {
+      // Activate client
       await supabase.from('clients').update({
         active: true,
         stripe_customer_id: session.customer,
         stripe_subscription_id: session.subscription
       }).eq('id', clientId);
       console.log('Client activated:', clientId);
+
+      // Get client details
+      const { data: clientData } = await supabase
+        .from('clients')
+        .select('contact_email, contact_name, business_name')
+        .eq('id', clientId)
+        .single();
+
+      if (clientData?.contact_email) {
+        // Generate temporary password
+        const tempPassword = 'Mash' + Math.random().toString(36).slice(-6).toUpperCase() + '!';
+
+        // Create Supabase auth user
+        const { data: authUser, error: authError } = await supabase.auth.admin.createUser({
+          email: clientData.contact_email,
+          password: tempPassword,
+          email_confirm: true
+        });
+
+        if (authError) {
+          console.log('Auth user creation error:', authError.message);
+        } else if (authUser?.user) {
+          // Link user to client
+          const { error: linkError } = await supabase.from('user_clients').insert({
+            user_id: authUser.user.id,
+            client_id: clientId,
+            role: 'client'
+          });
+
+          if (linkError) {
+            console.log('User client link error:', linkError.message);
+          } else {
+            console.log('User created and linked to client:', clientId);
+          }
+
+          // Send welcome email
+          const welcomeHtml = `
+            <div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;background:#f8fafc;padding:20px;">
+              <div style="background:linear-gradient(135deg,#1a1535,#211a42);border-radius:12px 12px 0 0;padding:32px;text-align:center;">
+                <svg width="48" height="48" viewBox="0 0 48 48" style="margin-bottom:16px;">
+                  <circle cx="24" cy="24" r="24" fill="#EEEDFE"/>
+                  <rect x="10" y="18" width="4" height="12" rx="2" fill="#534AB7"/>
+                  <rect x="16" y="13" width="4" height="22" rx="2" fill="#534AB7"/>
+                  <rect x="22" y="8" width="4" height="32" rx="2" fill="#7F77DD"/>
+                  <rect x="28" y="13" width="4" height="22" rx="2" fill="#534AB7"/>
+                  <rect x="34" y="18" width="4" height="12" rx="2" fill="#534AB7"/>
+                </svg>
+                <h1 style="color:#fff;margin:0;font-size:1.4rem;font-weight:800;">Welcome to Mash!</h1>
+                <p style="color:#AFA9EC;margin:8px 0 0;font-size:0.9rem;">Your AI receptionist is ready</p>
+              </div>
+              <div style="background:#fff;border-radius:0 0 12px 12px;padding:32px;border:1px solid #e2e8f0;border-top:none;">
+                <p style="color:#1a1535;font-size:1rem;font-weight:600;margin-bottom:8px;">Hi ${clientData.contact_name},</p>
+                <p style="color:#475569;font-size:0.9rem;line-height:1.7;margin-bottom:24px;">
+                  Welcome to Mash! Your AI receptionist for <strong>${clientData.business_name}</strong> is being set up and will be live within 24 hours.
+                </p>
+                <div style="background:#f5f3ff;border-radius:10px;padding:20px;margin-bottom:24px;border:1px solid #CECBF6;">
+                  <p style="font-size:0.8rem;font-weight:700;color:#534AB7;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">Your Login Details</p>
+                  <p style="margin:0 0 8px;font-size:0.9rem;color:#1a1535;"><strong>Dashboard:</strong> <a href="https://dashboard.mashai.com.au" style="color:#534AB7;">dashboard.mashai.com.au</a></p>
+                  <p style="margin:0 0 8px;font-size:0.9rem;color:#1a1535;"><strong>Email:</strong> ${clientData.contact_email}</p>
+                  <p style="margin:0;font-size:0.9rem;color:#1a1535;"><strong>Temporary Password:</strong> ${tempPassword}</p>
+                </div>
+                <p style="color:#94a3b8;font-size:0.82rem;margin-bottom:24px;">Please log in and change your password as soon as possible.</p>
+                <a href="https://dashboard.mashai.com.au/login" style="display:block;text-align:center;background:linear-gradient(135deg,#534AB7,#7F77DD);color:#fff;padding:14px 20px;border-radius:8px;text-decoration:none;font-weight:700;font-size:0.9rem;">Log In to Your Dashboard →</a>
+                <div style="margin-top:24px;padding-top:24px;border-top:1px solid #f1f5f9;">
+                  <p style="color:#94a3b8;font-size:0.8rem;line-height:1.6;">
+                    Questions? Reply to this email or contact us at <a href="mailto:info@karnaconnect.com.au" style="color:#534AB7;">info@karnaconnect.com.au</a><br/>
+                    Mash · A KarnaConnect product · ABN 84 924 272 443
+                  </p>
+                </div>
+              </div>
+            </div>
+          `;
+
+          try {
+            await transporter.sendMail({
+              from: process.env.SMTP_FROM,
+              to: clientData.contact_email,
+              subject: 'Welcome to Mash — Your login details',
+              html: welcomeHtml
+            });
+            console.log('Welcome email sent to:', clientData.contact_email);
+          } catch (emailErr) {
+            console.log('Welcome email error:', emailErr.message);
+          }
+        }
+      }
     }
   }
 
