@@ -1,6 +1,7 @@
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
+const resend = new Resend(process.env.RESEND_API_KEY);
 const admin = require('firebase-admin');
 
 const app = express();
@@ -26,18 +27,6 @@ try {
 } catch (err) {
   console.log('Firebase Admin initialization error:', err.message);
 }
-
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: parseInt(process.env.SMTP_PORT),
-  secure: false,
-  requireTLS: true,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS
-  },
-  tls: { rejectUnauthorized: false }
-});
 
 async function getClientIdFromPhoneNumberId(phoneNumberId) {
   if (!phoneNumberId) return null
@@ -182,8 +171,8 @@ app.post('/webhook/vapi', async (req, res) => {
     const emailHtml = '<div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;background:#f8fafc;padding:20px;"><div style="background:linear-gradient(135deg,#534AB7,#7F77DD);border-radius:12px 12px 0 0;padding:24px;text-align:center;"><h1 style="color:white;margin:0;font-size:1.3rem;">New Call — Mash</h1><p style="color:rgba(255,255,255,0.8);margin:6px 0 0;font-size:0.85rem;">' + businessName + '</p></div><div style="background:white;border-radius:0 0 12px 12px;padding:28px;border:1px solid #e2e8f0;border-top:none;"><p><strong>Caller:</strong> ' + caller + '</p><p><strong>Duration:</strong> ' + duration + '</p><p><strong>Outcome:</strong> ' + outcome + '</p><p><strong>Summary:</strong> ' + summary + '</p><a href="https://dashboard.mashai.com.au" style="display:block;text-align:center;background:linear-gradient(135deg,#534AB7,#7F77DD);color:white;padding:13px 20px;border-radius:8px;text-decoration:none;font-weight:700;margin-top:20px;">View Dashboard</a></div></div>';
 
     try {
-      await transporter.sendMail({
-        from: process.env.SMTP_FROM,
+      await resend.emails.send({
+        from: 'Mash <noreply@mashai.com.au>',
         to: notifyEmail,
         subject: 'New Call - ' + caller + ' (' + duration + ') - ' + businessName,
         html: emailHtml
@@ -231,8 +220,8 @@ app.post('/notify-onboard', async (req, res) => {
   const { business_name, contact_name, contact_email, contact_phone, plan_name, agent_name, vapi_agent_id } = req.body;
   const emailHtml = '<div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;padding:20px;"><h2>New Client Onboarded</h2><p><strong>Business:</strong> ' + business_name + '</p><p><strong>Contact:</strong> ' + contact_name + '</p><p><strong>Email:</strong> ' + contact_email + '</p><p><strong>Phone:</strong> ' + contact_phone + '</p><p><strong>Plan:</strong> ' + plan_name + '</p><p><strong>Agent:</strong> ' + agent_name + '</p><p><strong>VAPI ID:</strong> ' + vapi_agent_id + '</p><a href="https://dashboard.vapi.ai">Review Agent in VAPI</a></div>';
   try {
-    await transporter.sendMail({
-      from: process.env.SMTP_FROM,
+    await resend.emails.send({
+      from: 'Mash <noreply@mashai.com.au>',
       to: 'info@karnaconnect.com.au',
       subject: 'New Client - ' + business_name + ' (' + plan_name + ' Plan)',
       html: emailHtml
@@ -326,8 +315,8 @@ app.post('/create-agent', async (req, res) => {
     const emailHtml = '<div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;padding:20px;"><h2>New Client Onboarded</h2><p><strong>Business:</strong> ' + business_name + '</p><p><strong>Contact:</strong> ' + contact_name + '</p><p><strong>Email:</strong> ' + contact_email + '</p><p><strong>Phone:</strong> ' + contact_phone + '</p><p><strong>Plan:</strong> ' + plan_name + '</p><p><strong>Agent:</strong> ' + agent_name + '</p><p><strong>VAPI ID:</strong> ' + (vapiAgent.id || 'Failed') + '</p><br><p>Next steps: Review agent in VAPI, assign Twilio number, update vapi_phone_number_id in Supabase, test call, create client login.</p><a href="https://dashboard.vapi.ai">Review Agent in VAPI</a></div>';
 
     try {
-      await transporter.sendMail({
-        from: process.env.SMTP_FROM,
+      await resend.emails.send({
+        from: 'Mash <noreply@mashai.com.au>',
         to: 'info@karnaconnect.com.au',
         subject: 'New Client - ' + business_name + ' (' + plan_name + ' Plan)',
         html: emailHtml
@@ -447,13 +436,13 @@ app.post('/webhook/stripe', express.raw({type: 'application/json'}), async (req,
           `;
 
           try {
-            await transporter.sendMail({
-              from: process.env.SMTP_FROM,
-              to: clientData.contact_email,
-              subject: 'Welcome to Mash — Your login details',
-              html: welcomeHtml
-            });
-            console.log('Welcome email sent to:', clientData.contact_email);
+            await resend.emails.send({
+            from: 'Mash <noreply@mashai.com.au>',
+            to: clientData.contact_email,
+            subject: 'Welcome to Mash — Your login details',
+            html: welcomeHtml
+          });
+          console.log('Welcome email sent to:', clientData.contact_email);
           } catch (emailErr) {
             console.log('Welcome email error:', emailErr.message);
           }
