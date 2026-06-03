@@ -117,6 +117,8 @@ app.post('/webhook/vapi', async (req, res) => {
   const customer = message.customer || call.customer || {};
   const phoneNumberId = call.phoneNumberId;
 
+  console.log('Phone Number ID received:', phoneNumberId);
+  console.log('Full call object:', JSON.stringify(call));
   const clientId = await getClientIdFromPhoneNumberId(phoneNumberId)
   console.log('Client ID:', clientId);
   console.log('Caller:', customer.number);
