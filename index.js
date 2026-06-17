@@ -472,5 +472,110 @@ app.post('/webhook/stripe', express.raw({type: 'application/json'}), async (req,
   res.json({ received: true });
 });
 
+app.post('/send-digests', async (req, res) => {
+  const { type } = req.body; // 'daily' or 'weekly'
+  if (!type || !['daily', 'weekly'].includes(type)) return res.status(400).json({ error: 'Invalid type' });
+
+  const now = new Date();
+  const since = new Date(now);
+  if (type === 'daily') since.setDate(since.getDate() - 1);
+  else since.setDate(since.getDate() - 7);
+
+  const { data: clients } = await supabase
+    .from('clients')
+    .select('id, business_name, contact_name, contact_email, digest_frequency')
+    .eq('active', true)
+    .eq('digest_frequency', type);
+
+  if (!clients || clients.length === 0) return res.json({ sent: 0 });
+
+  let sent = 0;
+  for (const client of clients) {
+    const { data: calls } = await supabase
+      .from('calls')
+      .select('*')
+      .eq('client_id', client.id)
+      .gte('created_at', since.toISOString())
+      .order('created_at', { ascending: false });
+
+    if (!calls) continue;
+
+    const total = calls.length;
+    const completed = calls.filter(c => c.call_outcome && c.call_outcome.includes('ended')).length;
+    const missed = calls.filter(c => c.call_outcome === 'no-answer').length;
+    const voicemails = calls.filter(c => c.call_outcome === 'voicemail').length;
+    const totalSecs = calls.filter(c => c.call_duration).reduce((s, c) => s + parseFloat(c.call_duration), 0);
+    const hoursHandled = (totalSecs / 3600).toFixed(1);
+    const periodLabel = type === 'daily' ? 'Yesterday' : 'This Week';
+    const topCalls = calls.filter(c => c.call_summary).slice(0, 5);
+
+    const summaryRows = topCalls.map(c => `
+      <tr>
+        <td style="padding:10px 0;border-bottom:1px solid #f1f5f9;font-size:0.82rem;color:#475569;">${new Date(c.created_at).toLocaleString('en-AU', { timeZone: 'Australia/Perth', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' })}</td>
+        <td style="padding:10px 0;border-bottom:1px solid #f1f5f9;font-size:0.82rem;color:#475569;">${c.caller_number || 'Unknown'}</td>
+        <td style="padding:10px 8px;border-bottom:1px solid #f1f5f9;font-size:0.82rem;color:#475569;">${c.call_summary || ''}</td>
+      </tr>`).join('');
+
+    const html = `
+      <div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;background:#f8fafc;padding:20px;">
+        <div style="background:linear-gradient(135deg,#1a1535,#211a42);border-radius:12px 12px 0 0;padding:32px;text-align:center;">
+          <svg width="48" height="48" viewBox="0 0 48 48" style="margin-bottom:16px;">
+            <circle cx="24" cy="24" r="24" fill="#EEEDFE"/>
+            <rect x="10" y="18" width="4" height="12" rx="2" fill="#534AB7"/>
+            <rect x="16" y="13" width="4" height="22" rx="2" fill="#534AB7"/>
+            <rect x="22" y="8" width="4" height="32" rx="2" fill="#7F77DD"/>
+            <rect x="28" y="13" width="4" height="22" rx="2" fill="#534AB7"/>
+            <rect x="34" y="18" width="4" height="12" rx="2" fill="#534AB7"/>
+          </svg>
+          <h1 style="color:#fff;margin:0;font-size:1.3rem;font-weight:800;">${periodLabel}'s Summary</h1>
+          <p style="color:#AFA9EC;margin:8px 0 0;font-size:0.85rem;">${client.business_name} · Mash AI Receptionist</p>
+        </div>
+        <div style="background:#fff;border-radius:0 0 12px 12px;padding:32px;border:1px solid #e2e8f0;border-top:none;">
+          <p style="color:#1a1535;font-size:0.9rem;font-weight:600;margin-bottom:20px;">Hi ${client.contact_name},</p>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:28px;">
+            ${[['📞','Total Calls',total],['✅','Completed',completed],['❌','Missed',missed],['📬','Voicemails',voicemails]].map(([icon,label,val]) => `
+            <div style="background:#f5f3ff;border-radius:10px;padding:14px;text-align:center;">
+              <div style="font-size:1.2rem;margin-bottom:4px;">${icon}</div>
+              <div style="font-size:1.3rem;font-weight:800;color:#1a1535;">${val}</div>
+              <div style="font-size:0.7rem;color:#94a3b8;font-weight:600;">${label}</div>
+            </div>`).join('')}
+          </div>
+          <p style="font-size:0.82rem;color:#94a3b8;margin-bottom:20px;">⏱ Mash handled <strong>${hoursHandled} hours</strong> of calls on your behalf.</p>
+          ${topCalls.length > 0 ? `
+          <div style="margin-bottom:24px;">
+            <p style="font-size:0.78rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#534AB7;margin-bottom:12px;">Recent Calls</p>
+            <table style="width:100%;border-collapse:collapse;">
+              <tr>
+                <th style="text-align:left;font-size:0.7rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:1px;padding-bottom:8px;">Time</th>
+                <th style="text-align:left;font-size:0.7rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:1px;padding-bottom:8px;">Caller</th>
+                <th style="text-align:left;font-size:0.7rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:1px;padding-bottom:8px;">Summary</th>
+              </tr>
+              ${summaryRows}
+            </table>
+          </div>` : ''}
+          <a href="https://dashboard.mashai.com.au" style="display:block;text-align:center;background:linear-gradient(135deg,#534AB7,#7F77DD);color:#fff;padding:14px 20px;border-radius:8px;text-decoration:none;font-weight:700;font-size:0.9rem;">View Full Dashboard →</a>
+          <div style="margin-top:24px;padding-top:24px;border-top:1px solid #f1f5f9;">
+            <p style="color:#94a3b8;font-size:0.75rem;">Mash · A KarnaConnect product · ABN 84 924 272 443<br/>
+            <a href="https://dashboard.mashai.com.au" style="color:#534AB7;">dashboard.mashai.com.au</a></p>
+          </div>
+        </div>
+      </div>`;
+
+    try {
+      await resend.emails.send({
+        from: 'Mash <noreply@mashai.com.au>',
+        to: client.contact_email,
+        subject: `${periodLabel}'s Mash Summary — ${client.business_name}`,
+        html
+      });
+      sent++;
+    } catch (err) {
+      console.log('Digest email error for', client.business_name, err.message);
+    }
+  }
+
+  res.json({ sent });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
