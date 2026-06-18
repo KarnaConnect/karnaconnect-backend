@@ -3,6 +3,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
 const admin = require('firebase-admin');
+const cron = require('node-cron');
 
 const app = express();
 app.use(express.json());
@@ -575,6 +576,32 @@ app.post('/send-digests', async (req, res) => {
   }
 
   res.json({ sent });
+});
+
+// Daily digest — 8am AWST (UTC+8) = midnight UTC
+cron.schedule('0 0 * * *', async () => {
+  console.log('Running daily digest...');
+  try {
+    const res = await fetch(`http://localhost:${process.env.PORT || 3000}/send-digests`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'daily' })
+    });
+    const data = await res.json();
+    console.log('Daily digest sent:', data.sent, 'emails');
+  } catch (err) { console.log('Daily digest error:', err.message); }
+});
+
+// Weekly digest — Monday 8am AWST = Monday midnight UTC
+cron.schedule('0 0 * * 1', async () => {
+  console.log('Running weekly digest...');
+  try {
+    const res = await fetch(`http://localhost:${process.env.PORT || 3000}/send-digests`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'weekly' })
+    });
+    const data = await res.json();
+    console.log('Weekly digest sent:', data.sent, 'emails');
+  } catch (err) { console.log('Weekly digest error:', err.message); }
 });
 
 const PORT = process.env.PORT || 3000;
