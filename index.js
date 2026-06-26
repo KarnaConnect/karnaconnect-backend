@@ -616,6 +616,161 @@ cron.schedule('0 0 * * 1', async () => {
   } catch (err) { console.log('Weekly digest error:', err.message); }
 });
 
+// ── Campaign routes ───────────────────────────────────────────────────────────
+
+// Create campaign + contacts
+app.post('/campaigns', async (req, res) => {
+  try {
+    const { clientId, outboundAgentId, name, scheduledAt, contacts } = req.body;
+    if (!clientId || !outboundAgentId || !name || !scheduledAt || !contacts?.length) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const { data: campaign, error: ce } = await supabase
+      .from('campaigns')
+      .insert({ client_id: clientId, outbound_agent_id: outboundAgentId, name, scheduled_at: scheduledAt, total_contacts: contacts.length })
+      .select().single();
+    if (ce) throw ce;
+
+    const rows = contacts.map(c => ({ campaign_id: campaign.id, name: c.name || null, phone_number: c.phone_number }));
+    const { error: cce } = await supabase.from('campaign_contacts').insert(rows);
+    if (cce) throw cce;
+
+    res.json({ success: true, campaignId: campaign.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List campaigns for a client
+app.get('/campaigns/:clientId', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('campaigns')
+      .select('*, outbound_agents(label)')
+      .eq('client_id', req.params.clientId)
+      .order('scheduled_at', { ascending: false });
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get contacts for a campaign
+app.get('/campaigns/:campaignId/contacts', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('campaign_contacts')
+      .select('*')
+      .eq('campaign_id', req.params.campaignId)
+      .order('created_at');
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Cancel a campaign
+app.post('/campaigns/:campaignId/cancel', async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('campaigns')
+      .update({ status: 'cancelled' })
+      .eq('id', req.params.campaignId)
+      .eq('status', 'scheduled');
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Campaign runner (cron every minute) ──────────────────────────────────────
+async function runCampaign(campaign) {
+  console.log(`Running campaign: ${campaign.name} (${campaign.id})`);
+
+  // Mark as running
+  await supabase.from('campaigns').update({ status: 'running' }).eq('id', campaign.id);
+
+  // Get agent details
+  const { data: agent } = await supabase
+    .from('outbound_agents')
+    .select('vapi_agent_id, vapi_phone_number_id')
+    .eq('id', campaign.outbound_agent_id)
+    .single();
+
+  if (!agent) {
+    await supabase.from('campaigns').update({ status: 'failed' }).eq('id', campaign.id);
+    return;
+  }
+
+  // Get pending contacts
+  const { data: contacts } = await supabase
+    .from('campaign_contacts')
+    .select('*')
+    .eq('campaign_id', campaign.id)
+    .eq('status', 'pending');
+
+  let called = 0, failed = 0;
+
+  for (const contact of contacts || []) {
+    try {
+      await supabase.from('campaign_contacts').update({ status: 'calling' }).eq('id', contact.id);
+
+      const vapiRes = await fetch('https://api.vapi.ai/call/phone', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${process.env.VAPI_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assistantId: agent.vapi_agent_id,
+          phoneNumberId: agent.vapi_phone_number_id,
+          customer: { number: contact.phone_number, name: contact.name || undefined }
+        })
+      });
+
+      const result = await vapiRes.json();
+      if (vapiRes.ok) {
+        await supabase.from('campaign_contacts').update({ status: 'called', call_id: result.id }).eq('id', contact.id);
+        called++;
+      } else {
+        await supabase.from('campaign_contacts').update({ status: 'failed' }).eq('id', contact.id);
+        failed++;
+      }
+    } catch (err) {
+      await supabase.from('campaign_contacts').update({ status: 'failed' }).eq('id', contact.id);
+      failed++;
+    }
+
+    // 3 second delay between calls to avoid rate limiting
+    await new Promise(r => setTimeout(r, 3000));
+  }
+
+  await supabase.from('campaigns').update({
+    status: 'completed',
+    called_count: called,
+    failed_count: failed
+  }).eq('id', campaign.id);
+
+  console.log(`Campaign complete: ${campaign.name} — ${called} called, ${failed} failed`);
+}
+
+cron.schedule('* * * * *', async () => {
+  try {
+    const { data: due } = await supabase
+      .from('campaigns')
+      .select('*')
+      .eq('status', 'scheduled')
+      .lte('scheduled_at', new Date().toISOString());
+
+    for (const campaign of due || []) {
+      runCampaign(campaign).catch(err => console.error('Campaign error:', err.message));
+    }
+  } catch (err) {
+    console.error('Campaign cron error:', err.message);
+  }
+});
+
 // ── Outbound agents list ──────────────────────────────────────────────────────
 app.get('/outbound-agents/:clientId', async (req, res) => {
   try {
