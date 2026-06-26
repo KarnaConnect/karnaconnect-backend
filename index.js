@@ -114,6 +114,13 @@ app.post('/webhook/vapi', async (req, res) => {
 
   const body = req.body;
   const message = body.message || body;
+
+  // Only process the final end-of-call report; ignore all intermediate events
+  if (message.type !== 'end-of-call-report') {
+    console.log('Ignoring event type:', message.type);
+    return res.sendStatus(200);
+  }
+
   const call = message.call || {};
   const analysis = message.analysis || {};
   const customer = message.customer || call.customer || {};
