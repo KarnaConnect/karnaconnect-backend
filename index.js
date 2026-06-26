@@ -604,5 +604,48 @@ cron.schedule('0 0 * * 1', async () => {
   } catch (err) { console.log('Weekly digest error:', err.message); }
 });
 
+// ── Outbound agents list ──────────────────────────────────────────────────────
+app.get('/outbound-agents/:clientId', async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const { data, error } = await supabase
+      .from('outbound_agents')
+      .select('id, label, vapi_agent_id, vapi_phone_number_id')
+      .eq('client_id', clientId)
+      .order('created_at');
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Outbound call ─────────────────────────────────────────────────────────────
+app.post('/call/outbound', async (req, res) => {
+  try {
+    const { agentId, phoneNumberId, customerNumber, customerName } = req.body;
+    if (!agentId || !phoneNumberId || !customerNumber) {
+      return res.status(400).json({ error: 'agentId, phoneNumberId and customerNumber are required' });
+    }
+    const vapiRes = await fetch('https://api.vapi.ai/call/phone', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.VAPI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        assistantId: agentId,
+        phoneNumberId,
+        customer: { number: customerNumber, name: customerName || undefined }
+      })
+    });
+    const result = await vapiRes.json();
+    if (!vapiRes.ok) return res.status(vapiRes.status).json({ error: result });
+    res.json({ success: true, callId: result.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
