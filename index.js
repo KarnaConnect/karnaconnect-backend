@@ -135,6 +135,8 @@ app.post('/webhook/vapi', async (req, res) => {
   const fullTranscript = message.artifact?.transcript || null;
   const recordingUrl = message.artifact?.recordingUrl || null;
 
+  const direction = call.type === 'outboundPhoneCall' ? 'outbound' : 'inbound';
+
   const { data, error } = await supabase.from('calls').insert([{
     vapi_call_id: call.id,
     caller_number: customer.number,
@@ -145,7 +147,8 @@ app.post('/webhook/vapi', async (req, res) => {
     ended_at: message.endedAt,
     client_id: clientId,
     full_transcript: fullTranscript,
-    recording_url: recordingUrl
+    recording_url: recordingUrl,
+    direction
   }]);
 
   if (error) {
