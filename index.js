@@ -109,6 +109,135 @@ app.get('/', (req, res) => {
   res.send('KarnaConnect API is running');
 });
 
+// ── WhatsApp webhook ─────────────────────────────────────────────────────────
+
+// Verification handshake (Meta sends GET to verify the webhook URL)
+app.get('/webhook/whatsapp', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+    console.log('WhatsApp webhook verified');
+    return res.status(200).send(challenge);
+  }
+  res.sendStatus(403);
+});
+
+// Incoming WhatsApp messages
+app.post('/webhook/whatsapp', async (req, res) => {
+  try {
+    res.sendStatus(200); // Ack immediately
+
+    const entry = req.body?.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    if (!value?.messages?.length) return;
+
+    const message = value.messages[0];
+    const phoneNumberId = value.metadata?.phone_number_id;
+    const from = message.from; // customer's WhatsApp number
+    const text = message.type === 'text' ? message.text?.body : null;
+    if (!text) return;
+
+    console.log(`WhatsApp message from ${from}: ${text}`);
+
+    // Find client + agent config
+    const { data: agent } = await supabase
+      .from('whatsapp_agents')
+      .select('*, clients(business_name)')
+      .eq('phone_number_id', phoneNumberId)
+      .single();
+
+    if (!agent) {
+      console.log('No WhatsApp agent configured for phone_number_id:', phoneNumberId);
+      return;
+    }
+
+    // Fetch recent conversation history for context (last 10 messages)
+    const { data: history } = await supabase
+      .from('whatsapp_messages')
+      .select('role, content')
+      .eq('whatsapp_phone_number_id', phoneNumberId)
+      .eq('whatsapp_from', from)
+      .order('created_at', { ascending: false })
+      .limit(10);
+
+    const messages = [
+      { role: 'system', content: agent.system_prompt || `You are a helpful assistant for ${agent.clients?.business_name}. Be concise and friendly.` },
+      ...(history || []).reverse().map(h => ({ role: h.role, content: h.content })),
+      { role: 'user', content: text }
+    ];
+
+    // Get AI response
+    const aiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-4o-mini', messages, max_tokens: 300 })
+    });
+    const aiData = await aiRes.json();
+    const reply = aiData.choices?.[0]?.message?.content;
+    if (!reply) return;
+
+    // Send reply via WhatsApp
+    const token = agent.meta_access_token || process.env.META_ACCESS_TOKEN;
+    await fetch(`https://graph.facebook.com/v19.0/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: from,
+        type: 'text',
+        text: { body: reply }
+      })
+    });
+
+    // Save both messages to DB
+    await supabase.from('whatsapp_messages').insert([
+      { whatsapp_phone_number_id: phoneNumberId, whatsapp_from: from, role: 'user', content: text, client_id: agent.client_id },
+      { whatsapp_phone_number_id: phoneNumberId, whatsapp_from: from, role: 'assistant', content: reply, client_id: agent.client_id }
+    ]);
+
+    // Log as a call record so it shows in the dashboard
+    // We upsert by conversation key — update existing open conversation or create new one
+    const { data: existing } = await supabase
+      .from('calls')
+      .select('id, full_transcript, call_summary')
+      .eq('channel', 'whatsapp')
+      .eq('whatsapp_phone_number_id', phoneNumberId)
+      .eq('whatsapp_from', from)
+      .eq('client_id', agent.client_id)
+      .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()) // within last 24h
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    const transcript = existing
+      ? existing.full_transcript + `\nCustomer: ${text}\nAgent: ${reply}`
+      : `Customer: ${text}\nAgent: ${reply}`;
+
+    if (existing) {
+      await supabase.from('calls').update({ full_transcript: transcript, ended_at: new Date().toISOString() }).eq('id', existing.id);
+    } else {
+      await supabase.from('calls').insert([{
+        channel: 'whatsapp',
+        whatsapp_phone_number_id: phoneNumberId,
+        whatsapp_from: from,
+        caller_number: from,
+        client_id: agent.client_id,
+        full_transcript: transcript,
+        call_outcome: 'active',
+        started_at: new Date().toISOString(),
+        ended_at: new Date().toISOString(),
+        direction: 'inbound'
+      }]);
+    }
+
+  } catch (err) {
+    console.error('WhatsApp webhook error:', err.message);
+  }
+});
+
+// ── VAPI webhook ──────────────────────────────────────────────────────────────
 app.post('/webhook/vapi', async (req, res) => {
   console.log('Webhook received');
 
