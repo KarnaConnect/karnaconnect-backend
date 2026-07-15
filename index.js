@@ -910,6 +910,22 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
+// ── Recording proxy (VAPI auth required from July 15) ────────────────────────
+app.get('/recording/:vapiCallId', async (req, res) => {
+  try {
+    const vapiRes = await fetch(`https://api.vapi.ai/call/${req.params.vapiCallId}/mono-recording`, {
+      headers: { 'Authorization': `Bearer ${process.env.VAPI_API_KEY}` },
+      redirect: 'follow'
+    });
+    if (!vapiRes.ok) return res.status(vapiRes.status).json({ error: 'Recording not found' });
+    res.setHeader('Content-Type', 'audio/wav');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    vapiRes.body.pipe(res);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Outbound agents list ──────────────────────────────────────────────────────
 app.get('/outbound-agents/:clientId', async (req, res) => {
   try {
