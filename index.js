@@ -922,9 +922,11 @@ app.get('/recording/:vapiCallId', async (req, res) => {
       redirect: 'follow'
     });
     if (!vapiRes.ok) return res.status(vapiRes.status).json({ error: 'Recording not found' });
-    res.setHeader('Content-Type', 'audio/wav');
+    const buffer = await vapiRes.arrayBuffer();
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Length', buffer.byteLength);
     res.setHeader('Cache-Control', 'private, max-age=3600');
-    vapiRes.body.pipe(res);
+    res.end(Buffer.from(buffer));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
