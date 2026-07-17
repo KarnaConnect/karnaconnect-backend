@@ -266,7 +266,7 @@ app.post('/webhook/vapi', async (req, res) => {
 
   const direction = call.type === 'outboundPhoneCall' ? 'outbound' : 'inbound';
 
-  const { data, error } = await supabase.from('calls').insert([{
+  const callRecord = {
     vapi_call_id: call.id,
     caller_number: customer.number,
     call_duration: message.durationSeconds,
@@ -278,7 +278,11 @@ app.post('/webhook/vapi', async (req, res) => {
     full_transcript: fullTranscript,
     recording_url: recordingUrl,
     direction
-  }]);
+  };
+
+  // Upsert on vapi_call_id — prevents duplicates when VAPI sends multiple end-of-call-report events
+  const { data, error } = await supabase.from('calls')
+    .upsert(callRecord, { onConflict: 'vapi_call_id', ignoreDuplicates: false });
 
   if (error) {
     console.log('Supabase error:', error);
