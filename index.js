@@ -109,6 +109,39 @@ app.get('/', (req, res) => {
   res.send('KarnaConnect API is running');
 });
 
+// ── VAPI Tools ────────────────────────────────────────────────────────────────
+
+// Called by VAPI agents that need to know the current Perth time
+// to determine whether a call is during business hours or after hours.
+app.post('/tools/current-time', (req, res) => {
+  const now = new Date();
+  const perth = new Intl.DateTimeFormat('en-AU', {
+    timeZone: 'Australia/Perth',
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  }).format(now);
+
+  // Determine business hours in Perth
+  const perthDate = new Date(now.toLocaleString('en-US', { timeZone: 'Australia/Perth' }));
+  const day = perthDate.getDay(); // 0=Sun, 6=Sat
+  const hour = perthDate.getHours();
+  const minute = perthDate.getMinutes();
+  const totalMinutes = hour * 60 + minute;
+  const isWeekday = day >= 1 && day <= 5;
+  const isBusinessHours = isWeekday && totalMinutes >= 480 && totalMinutes < 1050; // 8:00am–5:30pm
+
+  const status = isBusinessHours
+    ? 'Within business hours (Monday–Friday 8:00am–5:30pm Perth time). The team is available but may be busy on other calls.'
+    : 'Outside business hours. The business is currently closed.';
+
+  res.json({ result: `Current Perth time: ${perth}. ${status}` });
+});
+
 // ── WhatsApp webhook ─────────────────────────────────────────────────────────
 
 // Verification handshake (Meta sends GET to verify the webhook URL)
