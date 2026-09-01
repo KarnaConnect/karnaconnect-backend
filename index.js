@@ -369,12 +369,31 @@ app.post('/webhook/vapi', async (req, res) => {
 
   const direction = call.type === 'outboundPhoneCall' ? 'outbound' : 'inbound';
 
+  const outcomeMap = {
+    'customer-ended-call': 'Completed',
+    'assistant-ended-call': 'Completed',
+    'silence-timed-out': 'Silence Timeout',
+    'max-duration-exceeded': 'Max Duration',
+    'voicemail': 'Voicemail',
+    'no-answer': 'No Answer',
+    'busy': 'Busy',
+    'failed': 'Failed',
+    'error': 'Error',
+  };
+  const rawOutcome = message.endedReason || '';
+  const callOutcome = outcomeMap[rawOutcome] || rawOutcome;
+
+  // Prefer structured outcome from VAPI analysis if available
+  const structuredData = analysis.structuredData || {};
+  const finalOutcome = structuredData.outcome || callOutcome;
+  const callSummary = analysis.summary || null;
+
   const callRecord = {
     vapi_call_id: call.id,
     caller_number: customer.number,
     call_duration: message.durationSeconds,
-    call_outcome: message.endedReason,
-    call_summary: analysis.summary,
+    call_outcome: finalOutcome,
+    call_summary: callSummary,
     started_at: call.createdAt,
     ended_at: message.endedAt,
     client_id: clientId,
@@ -556,6 +575,24 @@ app.post('/create-agent', async (req, res) => {
         clientMessages: ['transcript'],
         server: {
           url: 'https://expressjs-production-48b3.up.railway.app/webhook/vapi'
+        },
+        analysisPlan: {
+          summaryPrompt: 'Summarise this call in 2-3 sentences. Include: who called, what they needed, and what was resolved or left for follow-up. Write in third person, past tense.',
+          structuredDataPlan: {
+            schema: {
+              type: 'object',
+              properties: {
+                caller_name: { type: 'string', description: 'Full name of the caller if provided' },
+                intent: { type: 'string', description: 'Primary reason for the call, e.g. price enquiry, book appointment, complaint, general enquiry' },
+                outcome: { type: 'string', enum: ['Lead Captured', 'Appointment Booked', 'Enquiry Handled', 'Callback Requested', 'Not Interested', 'Wrong Number', 'Other'] },
+                follow_up_required: { type: 'boolean', description: 'Whether the business needs to follow up with this caller' }
+              }
+            }
+          },
+          successEvaluationPlan: {
+            rubric: 'DescriptiveScale',
+            prompt: 'Was this call handled successfully? Did the agent capture the caller\'s needs and provide a helpful response?'
+          }
         }
       })
     });
