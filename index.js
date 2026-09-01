@@ -113,33 +113,103 @@ app.get('/', (req, res) => {
 
 // Called by VAPI agents that need to know the current Perth time
 // to determine whether a call is during business hours or after hours.
+// Perth is always UTC+8, no daylight saving — calculated directly from UTC
+// to avoid relying on server timezone or Intl ICU support.
 app.post('/tools/current-time', (req, res) => {
-  const now = new Date();
-  const perth = new Intl.DateTimeFormat('en-AU', {
-    timeZone: 'Australia/Perth',
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  }).format(now);
+  // Shift UTC timestamp by +8 hours to get Perth local time
+  const perthMs = Date.now() + 8 * 3600 * 1000;
+  const p = new Date(perthMs);
 
-  // Determine business hours in Perth
-  const perthDate = new Date(now.toLocaleString('en-US', { timeZone: 'Australia/Perth' }));
-  const day = perthDate.getDay(); // 0=Sun, 6=Sat
-  const hour = perthDate.getHours();
-  const minute = perthDate.getMinutes();
-  const totalMinutes = hour * 60 + minute;
-  const isWeekday = day >= 1 && day <= 5;
-  const isBusinessHours = isWeekday && totalMinutes >= 480 && totalMinutes < 1050; // 8:00am–5:30pm
+  // Use UTC getters — they now reflect Perth local time
+  const day  = p.getUTCDay();    // 0=Sun, 6=Sat
+  const hour = p.getUTCHours();
+  const min  = p.getUTCMinutes();
+
+  // Format readable time string
+  const DAYS   = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const ampm   = hour >= 12 ? 'PM' : 'AM';
+  const h12    = hour % 12 || 12;
+  const minStr = min.toString().padStart(2, '0');
+  const perth  = `${DAYS[day]} ${p.getUTCDate()} ${MONTHS[p.getUTCMonth()]} ${p.getUTCFullYear()}, ${h12}:${minStr} ${ampm} Perth time`;
+
+  // Business hours: Mon–Fri 8:00am–5:30pm
+  const totalMinutes  = hour * 60 + min;
+  const isWeekday     = day >= 1 && day <= 5;
+  const isBusinessHours = isWeekday && totalMinutes >= 480 && totalMinutes < 1050;
 
   const status = isBusinessHours
     ? 'Within business hours (Monday–Friday 8:00am–5:30pm Perth time). The team is available but may be busy on other calls.'
     : 'Outside business hours. The business is currently closed.';
 
   res.json({ result: `Current Perth time: ${perth}. ${status}` });
+});
+
+// ── Mash Sales Agent Tools ───────────────────────────────────────────────────
+
+app.post('/tools/capture-lead', async (req, res) => {
+  const { name, business_name, industry, phone, email, notes } = req.body;
+  try {
+    const emailHtml = `
+      <div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;background:#f8fafc;padding:20px;">
+        <div style="background:linear-gradient(135deg,#534AB7,#7F77DD);border-radius:12px 12px 0 0;padding:24px;text-align:center;">
+          <h1 style="color:white;margin:0;font-size:1.3rem;">New Lead — Mash AI</h1>
+        </div>
+        <div style="background:white;border-radius:0 0 12px 12px;padding:28px;border:1px solid #e2e8f0;border-top:none;">
+          <p><strong>Name:</strong> ${name || 'Not captured'}</p>
+          <p><strong>Business:</strong> ${business_name || 'Not captured'}</p>
+          <p><strong>Industry:</strong> ${industry || 'Not captured'}</p>
+          <p><strong>Phone:</strong> ${phone || 'Not captured'}</p>
+          <p><strong>Email:</strong> ${email || 'Not captured'}</p>
+          <p><strong>Notes:</strong> ${notes || 'None'}</p>
+          <a href="https://dashboard.mashai.com.au" style="display:block;text-align:center;background:linear-gradient(135deg,#534AB7,#7F77DD);color:white;padding:13px 20px;border-radius:8px;text-decoration:none;font-weight:700;margin-top:20px;">View Dashboard</a>
+        </div>
+      </div>`;
+    await resend.emails.send({
+      from: 'Mash <noreply@mashai.com.au>',
+      to: 'syedadilshah@live.com',
+      subject: `New Lead: ${name || 'Unknown'} — ${business_name || 'Unknown Business'}`,
+      html: emailHtml
+    });
+    console.log('Lead captured and emailed:', name, business_name);
+    res.json({ result: 'Lead captured successfully. Adil has been notified.' });
+  } catch (err) {
+    console.error('Lead capture error:', err.message);
+    res.json({ result: 'Lead details noted. Our team will follow up shortly.' });
+  }
+});
+
+app.post('/tools/book-meeting', async (req, res) => {
+  const { name, business_name, phone, email, preferred_date, preferred_time, notes } = req.body;
+  try {
+    const emailHtml = `
+      <div style="font-family:Segoe UI,sans-serif;max-width:600px;margin:0 auto;background:#f8fafc;padding:20px;">
+        <div style="background:linear-gradient(135deg,#534AB7,#7F77DD);border-radius:12px 12px 0 0;padding:24px;text-align:center;">
+          <h1 style="color:white;margin:0;font-size:1.3rem;">Meeting Request — Mash AI</h1>
+        </div>
+        <div style="background:white;border-radius:0 0 12px 12px;padding:28px;border:1px solid #e2e8f0;border-top:none;">
+          <p><strong>Name:</strong> ${name || 'Not captured'}</p>
+          <p><strong>Business:</strong> ${business_name || 'Not captured'}</p>
+          <p><strong>Phone:</strong> ${phone || 'Not captured'}</p>
+          <p><strong>Email:</strong> ${email || 'Not captured'}</p>
+          <p><strong>Preferred Date:</strong> ${preferred_date || 'Flexible'}</p>
+          <p><strong>Preferred Time:</strong> ${preferred_time || 'Flexible'}</p>
+          <p><strong>Notes:</strong> ${notes || 'None'}</p>
+          <p style="margin-top:20px;padding:14px;background:#EEEDFE;border-radius:8px;color:#534AB7;font-weight:600;">ACTION REQUIRED: Please confirm and add to your calendar.</p>
+        </div>
+      </div>`;
+    await resend.emails.send({
+      from: 'Mash <noreply@mashai.com.au>',
+      to: 'syedadilshah@live.com',
+      subject: `Meeting Request: ${name || 'Unknown'} — ${preferred_date || 'Date TBC'} ${preferred_time || ''}`,
+      html: emailHtml
+    });
+    console.log('Meeting booked and emailed:', name, preferred_date, preferred_time);
+    res.json({ result: `Perfect. Your meeting request has been sent to our team. Adil will confirm the time with you shortly at ${email || 'your email'} or ${phone || 'your number'}.` });
+  } catch (err) {
+    console.error('Meeting booking error:', err.message);
+    res.json({ result: 'Meeting request noted. Our team will be in touch to confirm a time.' });
+  }
 });
 
 // ── WhatsApp webhook ─────────────────────────────────────────────────────────
