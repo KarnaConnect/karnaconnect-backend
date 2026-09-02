@@ -590,8 +590,7 @@ app.post('/create-agent', async (req, res) => {
             }
           },
           successEvaluationPlan: {
-            rubric: 'DescriptiveScale',
-            prompt: 'Was this call handled successfully? Did the agent capture the caller\'s needs and provide a helpful response?'
+            rubric: 'DescriptiveScale'
           }
         }
       })
@@ -1136,7 +1135,7 @@ app.get('/admin/patch-mash-analysis', async (req, res) => {
               }
             }
           },
-          successEvaluationPlan: { rubric: 'DescriptiveScale', prompt: "Was this call handled successfully?" }
+          successEvaluationPlan: { rubric: 'DescriptiveScale' }
         }
       })
     });
