@@ -1056,16 +1056,40 @@ cron.schedule('* * * * *', async () => {
 // ── Recording proxy (VAPI auth required from July 15) ────────────────────────
 app.get('/recording/:vapiCallId', async (req, res) => {
   try {
-    const vapiRes = await fetch(`https://api.vapi.ai/call/${req.params.vapiCallId}/mono-recording`, {
-      headers: { 'Authorization': `Bearer ${process.env.VAPI_API_KEY}` },
-      redirect: 'follow'
-    });
-    if (!vapiRes.ok) return res.status(vapiRes.status).json({ error: 'Recording not found' });
-    const buffer = await vapiRes.arrayBuffer();
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Content-Length', buffer.byteLength);
+    // 1. Get the recording URL — first try DB, then VAPI API
+    let recordingUrl = null;
+
+    const { data: callRow } = await supabase
+      .from('calls')
+      .select('recording_url')
+      .eq('vapi_call_id', req.params.vapiCallId)
+      .single();
+
+    if (callRow?.recording_url) {
+      recordingUrl = callRow.recording_url;
+    } else {
+      // Fall back to VAPI API
+      const vapiCall = await fetch(`https://api.vapi.ai/call/${req.params.vapiCallId}`, {
+        headers: { 'Authorization': `Bearer ${process.env.VAPI_API_KEY}` }
+      });
+      const callData = await vapiCall.json();
+      recordingUrl = callData?.artifact?.recordingUrl || callData?.recordingUrl || null;
+    }
+
+    if (!recordingUrl) return res.status(404).json({ error: 'Recording not available' });
+
+    // 2. Proxy the audio stream back to the browser
+    const audioRes = await fetch(recordingUrl);
+    if (!audioRes.ok) return res.status(audioRes.status).json({ error: 'Could not fetch recording' });
+
+    const contentType = audioRes.headers.get('content-type') || 'audio/wav';
+    const contentLength = audioRes.headers.get('content-length');
+    res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'private, max-age=3600');
-    res.end(Buffer.from(buffer));
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+
+    audioRes.body.pipe(res);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
