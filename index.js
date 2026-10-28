@@ -4,6 +4,7 @@ const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
 const admin = require('firebase-admin');
 const cron = require('node-cron');
+const { Readable } = require('stream');
 
 const app = express();
 
@@ -1054,44 +1055,37 @@ cron.schedule('* * * * *', async () => {
 });
 
 // ── Recording proxy (VAPI auth required from July 15) ────────────────────────
+// Recordings live in VAPI's private bucket, so the stored recording_url can't be
+// fetched directly. Ask VAPI for a short-lived signed URL and redirect the
+// browser to it, which also gives the <audio> element range requests and the
+// right content type.
 app.get('/recording/:vapiCallId', async (req, res) => {
   try {
-    // 1. Get the recording URL — first try DB, then VAPI API
-    let recordingUrl = null;
+    const vapiRes = await fetch(`https://api.vapi.ai/call/${encodeURIComponent(req.params.vapiCallId)}/mono-recording`, {
+      headers: { 'Authorization': `Bearer ${process.env.VAPI_API_KEY}` },
+      redirect: 'manual'
+    });
 
-    const { data: callRow } = await supabase
-      .from('calls')
-      .select('recording_url')
-      .eq('vapi_call_id', req.params.vapiCallId)
-      .single();
-
-    if (callRow?.recording_url) {
-      recordingUrl = callRow.recording_url;
-    } else {
-      // Fall back to VAPI API
-      const vapiCall = await fetch(`https://api.vapi.ai/call/${req.params.vapiCallId}`, {
-        headers: { 'Authorization': `Bearer ${process.env.VAPI_API_KEY}` }
-      });
-      const callData = await vapiCall.json();
-      recordingUrl = callData?.artifact?.recordingUrl || callData?.recordingUrl || null;
+    const signedUrl = vapiRes.headers.get('location');
+    if (vapiRes.status >= 300 && vapiRes.status < 400 && signedUrl) {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.redirect(302, signedUrl);
     }
 
-    if (!recordingUrl) return res.status(404).json({ error: 'Recording not available' });
+    if (!vapiRes.ok) {
+      console.error('Recording fetch failed:', req.params.vapiCallId, vapiRes.status);
+      return res.status(vapiRes.status === 404 ? 404 : 502).json({ error: 'Recording not available' });
+    }
 
-    // 2. Proxy the audio stream back to the browser
-    const audioRes = await fetch(recordingUrl);
-    if (!audioRes.ok) return res.status(audioRes.status).json({ error: 'Could not fetch recording' });
-
-    const contentType = audioRes.headers.get('content-type') || 'audio/wav';
-    const contentLength = audioRes.headers.get('content-length');
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'private, max-age=3600');
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // VAPI returned the audio itself rather than a redirect — stream it through
+    res.setHeader('Content-Type', vapiRes.headers.get('content-type') || 'audio/wav');
+    const contentLength = vapiRes.headers.get('content-length');
     if (contentLength) res.setHeader('Content-Length', contentLength);
-
-    audioRes.body.pipe(res);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    Readable.fromWeb(vapiRes.body).pipe(res);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Recording proxy error:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
   }
 });
 
