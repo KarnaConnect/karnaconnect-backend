@@ -1074,7 +1074,7 @@ app.get('/recording/:vapiCallId', async (req, res) => {
 
     if (!vapiRes.ok) {
       console.error('Recording fetch failed:', req.params.vapiCallId, vapiRes.status);
-      return res.status(vapiRes.status === 404 ? 404 : 502).json({ error: 'Recording not available' });
+      return res.status(vapiRes.status === 404 ? 404 : 502).json({ error: 'Recording not available', vapiStatus: vapiRes.status });
     }
 
     // VAPI returned the audio itself rather than a redirect — stream it through
