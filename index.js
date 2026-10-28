@@ -1061,28 +1061,36 @@ cron.schedule('* * * * *', async () => {
 // right content type.
 app.get('/recording/:vapiCallId', async (req, res) => {
   try {
-    const vapiRes = await fetch(`https://api.vapi.ai/call/${encodeURIComponent(req.params.vapiCallId)}/mono-recording`, {
-      headers: { 'Authorization': `Bearer ${process.env.VAPI_API_KEY}` },
-      redirect: 'manual'
-    });
+    // Try the combined mono file first, then stereo for calls that only have that
+    const attempts = [];
+    for (const kind of ['mono-recording', 'stereo-recording']) {
+      const vapiRes = await fetch(`https://api.vapi.ai/call/${encodeURIComponent(req.params.vapiCallId)}/${kind}`, {
+        headers: { 'Authorization': `Bearer ${process.env.VAPI_API_KEY}` },
+        redirect: 'manual'
+      });
 
-    const signedUrl = vapiRes.headers.get('location');
-    if (vapiRes.status >= 300 && vapiRes.status < 400 && signedUrl) {
-      res.setHeader('Cache-Control', 'no-store');
-      return res.redirect(302, signedUrl);
+      const signedUrl = vapiRes.headers.get('location');
+      if (vapiRes.status >= 300 && vapiRes.status < 400 && signedUrl) {
+        res.setHeader('Cache-Control', 'no-store');
+        return res.redirect(302, signedUrl);
+      }
+
+      if (vapiRes.ok) {
+        // VAPI returned the audio itself rather than a redirect — stream it through
+        res.setHeader('Content-Type', vapiRes.headers.get('content-type') || 'audio/wav');
+        const contentLength = vapiRes.headers.get('content-length');
+        if (contentLength) res.setHeader('Content-Length', contentLength);
+        res.setHeader('Cache-Control', 'private, max-age=300');
+        return Readable.fromWeb(vapiRes.body).pipe(res);
+      }
+
+      const body = (await vapiRes.text().catch(() => '')).slice(0, 300);
+      attempts.push({ endpoint: kind, status: vapiRes.status, body });
     }
 
-    if (!vapiRes.ok) {
-      console.error('Recording fetch failed:', req.params.vapiCallId, vapiRes.status);
-      return res.status(vapiRes.status === 404 ? 404 : 502).json({ error: 'Recording not available', vapiStatus: vapiRes.status });
-    }
-
-    // VAPI returned the audio itself rather than a redirect — stream it through
-    res.setHeader('Content-Type', vapiRes.headers.get('content-type') || 'audio/wav');
-    const contentLength = vapiRes.headers.get('content-length');
-    if (contentLength) res.setHeader('Content-Length', contentLength);
-    res.setHeader('Cache-Control', 'private, max-age=300');
-    Readable.fromWeb(vapiRes.body).pipe(res);
+    console.error('Recording fetch failed:', req.params.vapiCallId, JSON.stringify(attempts));
+    const notFound = attempts.every(a => a.status === 404);
+    res.status(notFound ? 404 : 502).json({ error: 'Recording not available', vapi: attempts });
   } catch (err) {
     console.error('Recording proxy error:', err.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
