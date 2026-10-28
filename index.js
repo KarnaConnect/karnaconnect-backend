@@ -414,6 +414,11 @@ app.post('/webhook/vapi', async (req, res) => {
 
   console.log('Call saved successfully');
 
+  // Copy the recording into our own storage now — VAPI only serves recordings for 14 days
+  if (recordingUrl && call.id) {
+    archiveRecording(call.id).catch(err => console.error('Recording archive failed:', call.id, err.message));
+  }
+
   if (clientId && message.durationSeconds) {
     const minutes = message.durationSeconds / 60;
     await supabase.rpc('increment_minutes', {
@@ -1054,43 +1059,100 @@ cron.schedule('* * * * *', async () => {
   }
 });
 
-// ── Recording proxy (VAPI auth required from July 15) ────────────────────────
-// Recordings live in VAPI's private bucket, so the stored recording_url can't be
-// fetched directly. Ask VAPI for a short-lived signed URL and redirect the
-// browser to it, which also gives the <audio> element range requests and the
-// right content type.
-app.get('/recording/:vapiCallId', async (req, res) => {
-  try {
-    // Try the combined mono file first, then stereo for calls that only have that
-    const attempts = [];
-    for (const kind of ['mono-recording', 'stereo-recording']) {
-      const vapiRes = await fetch(`https://api.vapi.ai/call/${encodeURIComponent(req.params.vapiCallId)}/${kind}`, {
-        headers: { 'Authorization': `Bearer ${process.env.VAPI_API_KEY}` },
-        redirect: 'manual'
+// ── Recordings ───────────────────────────────────────────────────────────────
+// VAPI keeps recordings in a private bucket and only serves them for 14 days on
+// our plan, so each recording is copied into a private Supabase Storage bucket
+// when the call ends. Playback is served from there, falling back to VAPI.
+const RECORDINGS_BUCKET = 'call-recordings';
+let recordingsBucketReady = null;
+
+function ensureRecordingsBucket() {
+  if (!recordingsBucketReady) {
+    recordingsBucketReady = supabase.storage.createBucket(RECORDINGS_BUCKET, { public: false })
+      .then(({ error }) => {
+        if (error && !/already exists/i.test(error.message)) {
+          recordingsBucketReady = null;
+          throw error;
+        }
       });
+  }
+  return recordingsBucketReady;
+}
 
-      const signedUrl = vapiRes.headers.get('location');
-      if (vapiRes.status >= 300 && vapiRes.status < 400 && signedUrl) {
-        res.setHeader('Cache-Control', 'no-store');
-        return res.redirect(302, signedUrl);
-      }
+const recordingPath = (vapiCallId) => `${vapiCallId}.wav`;
 
-      if (vapiRes.ok) {
-        // VAPI returned the audio itself rather than a redirect — stream it through
-        res.setHeader('Content-Type', vapiRes.headers.get('content-type') || 'audio/wav');
-        const contentLength = vapiRes.headers.get('content-length');
-        if (contentLength) res.setHeader('Content-Length', contentLength);
-        res.setHeader('Cache-Control', 'private, max-age=300');
-        return Readable.fromWeb(vapiRes.body).pipe(res);
-      }
+// Ask VAPI for a recording. Returns { signedUrl } or { response } on success,
+// otherwise { attempts } with each endpoint's status and error body.
+async function getVapiRecording(vapiCallId) {
+  const attempts = [];
+  // Try the combined mono file first, then stereo for calls that only have that
+  for (const kind of ['mono-recording', 'stereo-recording']) {
+    const vapiRes = await fetch(`https://api.vapi.ai/call/${encodeURIComponent(vapiCallId)}/${kind}`, {
+      headers: { 'Authorization': `Bearer ${process.env.VAPI_API_KEY}` },
+      redirect: 'manual'
+    });
 
-      const body = (await vapiRes.text().catch(() => '')).slice(0, 300);
-      attempts.push({ endpoint: kind, status: vapiRes.status, body });
+    const signedUrl = vapiRes.headers.get('location');
+    if (vapiRes.status >= 300 && vapiRes.status < 400 && signedUrl) return { signedUrl };
+    if (vapiRes.ok) return { response: vapiRes };
+
+    const body = (await vapiRes.text().catch(() => '')).slice(0, 300);
+    attempts.push({ endpoint: kind, status: vapiRes.status, body });
+  }
+  return { attempts };
+}
+
+async function archiveRecording(vapiCallId) {
+  const result = await getVapiRecording(vapiCallId);
+  if (result.attempts) throw new Error(`VAPI refused recording: ${JSON.stringify(result.attempts)}`);
+
+  const audioRes = result.response || await fetch(result.signedUrl);
+  if (!audioRes.ok) throw new Error(`Recording download failed: ${audioRes.status}`);
+  const audio = Buffer.from(await audioRes.arrayBuffer());
+
+  await ensureRecordingsBucket();
+  const { error } = await supabase.storage.from(RECORDINGS_BUCKET).upload(recordingPath(vapiCallId), audio, {
+    contentType: audioRes.headers.get('content-type') || 'audio/wav',
+    upsert: true
+  });
+  if (error) throw error;
+  console.log('Recording archived:', vapiCallId, audio.length, 'bytes');
+}
+
+app.get('/recording/:vapiCallId', async (req, res) => {
+  const { vapiCallId } = req.params;
+  try {
+    // 1. Our own copy
+    const { data: stored } = await supabase.storage.from(RECORDINGS_BUCKET)
+      .createSignedUrl(recordingPath(vapiCallId), 3600);
+    if (stored?.signedUrl) {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.redirect(302, stored.signedUrl);
     }
 
-    console.error('Recording fetch failed:', req.params.vapiCallId, JSON.stringify(attempts));
-    const notFound = attempts.every(a => a.status === 404);
-    res.status(notFound ? 404 : 502).json({ error: 'Recording not available', vapi: attempts });
+    // 2. VAPI (only works within the plan's retention window)
+    const result = await getVapiRecording(vapiCallId);
+    if (result.attempts) {
+      console.error('Recording fetch failed:', vapiCallId, JSON.stringify(result.attempts));
+      const notFound = result.attempts.every(a => a.status === 404);
+      return res.status(notFound ? 404 : 502).json({ error: 'Recording not available', vapi: result.attempts });
+    }
+
+    // Recording is still on VAPI but not archived yet (e.g. call predates archiving) — copy it now
+    archiveRecording(vapiCallId).catch(err => console.error('Recording archive failed:', vapiCallId, err.message));
+
+    if (result.signedUrl) {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.redirect(302, result.signedUrl);
+    }
+
+    // VAPI returned the audio itself rather than a redirect — stream it through
+    const vapiRes = result.response;
+    res.setHeader('Content-Type', vapiRes.headers.get('content-type') || 'audio/wav');
+    const contentLength = vapiRes.headers.get('content-length');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    Readable.fromWeb(vapiRes.body).pipe(res);
   } catch (err) {
     console.error('Recording proxy error:', err.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
