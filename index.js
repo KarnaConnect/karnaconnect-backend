@@ -345,6 +345,21 @@ app.post('/webhook/whatsapp', async (req, res) => {
 });
 
 // ── VAPI webhook ──────────────────────────────────────────────────────────────
+function fallbackSummary(message, direction, outcome) {
+  const sd = message.analysis?.structuredData || {};
+  const secs = Math.round(message.durationSeconds || 0);
+  const turns = (message.artifact?.messages || []).filter(m => m.role === 'user' || m.role === 'bot' || m.role === 'assistant').length;
+  const parts = [`Short ${direction} call (${secs}s${turns ? `, ${turns} turns` : ''}).`];
+  if (sd.contact_name || sd.caller_name) parts.push(`Spoke with ${sd.contact_name || sd.caller_name}.`);
+  if (outcome) parts.push(`Outcome: ${outcome}.`);
+  if (sd.current_call_handling) parts.push(`Handles calls today: ${sd.current_call_handling}.`);
+  if (sd.main_objection) parts.push(`Objection: ${sd.main_objection}.`);
+  if (sd.intent) parts.push(`Reason: ${sd.intent}.`);
+  if (message.endedReason) parts.push(`Ended: ${message.endedReason.replace(/-/g, ' ')}.`);
+  parts.push('No AI summary was generated for this call; see the transcript.');
+  return parts.join(' ');
+}
+
 app.post('/webhook/vapi', async (req, res) => {
   console.log('Webhook received');
 
@@ -390,7 +405,9 @@ app.post('/webhook/vapi', async (req, res) => {
   // Prefer structured outcome from VAPI analysis if available
   const structuredData = analysis.structuredData || {};
   const finalOutcome = structuredData.outcome || callOutcome;
-  const callSummary = analysis.summary || null;
+  // VAPI skips the AI summary on very short calls, so fall back to what we know
+  const callSummary = analysis.summary || fallbackSummary(message, direction, finalOutcome);
+  message.summaryText = callSummary;
 
   const callRecord = {
     vapi_call_id: call.id,
