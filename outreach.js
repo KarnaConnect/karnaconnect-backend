@@ -1,6 +1,7 @@
 // ── Mash sales outreach ───────────────────────────────────────────────────────
 // Mash calling Australian businesses to sell Mash itself. This module owns:
-//   - the "Mia — Mash Outreach" VAPI assistant (script, tools, analysis)
+//   - the "Mash — Sales Outreach" VAPI assistant (script, tools, analysis),
+//     created/updated automatically on backend startup
 //   - compliant campaign pacing (calling hours, do-not-call list, concurrency)
 //   - the tools the assistant calls mid-call (book demo, send trial link, opt out)
 //   - updating campaign contacts when VAPI sends the end-of-call report
@@ -8,7 +9,7 @@
 // Only campaigns run by an outbound agent with purpose = 'sales' use this pacing.
 // Other outbound agents (e.g. Platinum's pickup notifications) keep the old runner.
 
-const SALES_AGENT_NAME = 'Mia — Mash Outreach';
+const SALES_AGENT_NAME = 'Mash — Sales Outreach';
 const TRIAL_LINK = 'https://dashboard.mashai.com.au/onboarding';
 const ADMIN_EMAIL = 'syedadilshah@live.com';
 const FROM_EMAIL = 'Mash <noreply@mashai.com.au>';
@@ -27,9 +28,9 @@ const DEFAULT_SALES_CAMPAIGN = {
   max_concurrent: 1
 };
 
-const SALES_PROMPT = `You are Mia, an AI sales assistant calling on behalf of Mash AI, a Perth-based Australian company (trading under KarnaConnect) that gives businesses an AI receptionist which answers every call, 24/7.
+const SALES_PROMPT = `Your name is Mash. You are the AI sales assistant for Mash AI, a Perth-based Australian company (trading under KarnaConnect) that gives businesses an AI receptionist which answers every call, 24/7.
 
-This is an OUTBOUND COLD CALL to a business that has NOT contacted us before. You are an AI, and every call you make is a live demo of the product you are selling.
+This is an OUTBOUND COLD CALL to a business that has NOT contacted us before. You are an AI, and you share your name with the product: you ARE Mash, so every call you make is a live demo of what you are selling.
 
 Details you may have for this call (blank means unknown — never read out a blank or a placeholder):
 - Business: {{businessName}}
@@ -115,9 +116,9 @@ Only mention pricing if asked, or if they ask "what does it cost".
 - opt_out: whenever they decline, ask not to be called, or it's a wrong number.
 - endCall: to hang up after saying goodbye.`;
 
-const FIRST_MESSAGE = "Hi, this is Mia, an AI assistant calling from Mash AI here in Perth, and just so you know, this call is recorded. Am I speaking with the owner or manager{% if businessName != blank %} of {{businessName}}{% endif %}?";
+const FIRST_MESSAGE = "Hi, this is Mash, an AI assistant from Mash AI here in Perth, and just so you know, this call is recorded. Am I speaking with the owner or manager{% if businessName != blank %} of {{businessName}}{% endif %}?";
 
-const VOICEMAIL_MESSAGE = "Hi, this is Mia, an AI assistant calling from Mash AI in Perth. I was calling about helping your business answer every call, even after hours. No need to call back. If you're curious, have a look at mash ai dot com dot au. Thanks, and have a great day.";
+const VOICEMAIL_MESSAGE = "Hi, this is Mash, an AI assistant from Mash AI in Perth. I was calling about helping your business answer every call, even after hours. No need to call back. If you're curious, have a look at mash ai dot com dot au. Thanks, and have a great day.";
 
 const END_CALL_MESSAGE = "Thanks so much for your time. Have a great day!";
 
@@ -380,61 +381,49 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
   }
 
   async function mashClient() {
-    const { data } = await supabase.from('clients').select('id, business_name, vapi_phone_number_id').eq('business_name', 'Mash AI').maybeSingle();
+    const { data } = await supabase.from('clients').select('id, business_name, phone_number, vapi_phone_number_id').eq('business_name', 'Mash AI').maybeSingle();
     return data;
   }
 
-  // ── Sales agent: status + one-click setup/update ────────────────────────────
-  app.get('/outreach/sales-agent', requireAdmin, async (req, res) => {
-    const client = await mashClient();
-    if (!client) return res.status(404).json({ error: 'No "Mash AI" client found' });
-    const { data: agent } = await supabase.from('outbound_agents').select('*')
-      .eq('client_id', client.id).eq('purpose', 'sales').maybeSingle();
-    const { count: dncCount } = await supabase.from('do_not_call').select('*', { count: 'exact', head: true });
-    res.json({
-      client,
-      agent: agent || null,
-      dncCount: dncCount || 0,
-      smsEnabled: !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_SMS_FROM),
-      defaults: DEFAULT_SALES_CAMPAIGN,
-      script: { firstMessage: FIRST_MESSAGE, prompt: SALES_PROMPT, voicemailMessage: VOICEMAIL_MESSAGE }
-    });
-  });
-
-  app.post('/outreach/sales-agent', requireAdmin, async (req, res) => {
+  // ── Sales agent: created/updated in VAPI on startup ─────────────────────────
+  // Creates the assistant the first time (and emails Adil the details), then
+  // keeps its script in sync with this file on every deploy.
+  async function syncSalesAgent() {
     try {
       const client = await mashClient();
-      if (!client) return res.status(404).json({ error: 'No "Mash AI" client found' });
-      const phoneNumberId = req.body?.phoneNumberId || client.vapi_phone_number_id;
-      if (!phoneNumberId) return res.status(400).json({ error: 'No VAPI phone number for caller ID' });
-
+      if (!client?.vapi_phone_number_id) throw new Error('No "Mash AI" client with a VAPI phone number');
       const { data: existing } = await supabase.from('outbound_agents').select('*')
         .eq('client_id', client.id).eq('purpose', 'sales').maybeSingle();
 
       const config = salesAssistantConfig(backendUrl());
-      const url = existing?.vapi_agent_id ? `https://api.vapi.ai/assistant/${existing.vapi_agent_id}` : 'https://api.vapi.ai/assistant';
-      const vapiRes = await fetch(url, {
+      const vapiRes = await fetch(existing?.vapi_agent_id ? `https://api.vapi.ai/assistant/${existing.vapi_agent_id}` : 'https://api.vapi.ai/assistant', {
         method: existing?.vapi_agent_id ? 'PATCH' : 'POST',
         headers: { 'Authorization': `Bearer ${process.env.VAPI_API_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
       });
       const assistant = await vapiRes.json();
-      if (!vapiRes.ok) {
-        console.error('Sales agent VAPI error:', JSON.stringify(assistant));
-        return res.status(502).json({ error: 'VAPI rejected the assistant', vapi: assistant });
-      }
+      if (!vapiRes.ok) throw new Error('VAPI rejected the assistant: ' + JSON.stringify(assistant.message || assistant));
 
-      const row = { client_id: client.id, label: 'Mash Sales — Mia (cold outreach)', vapi_agent_id: assistant.id, vapi_phone_number_id: phoneNumberId, purpose: 'sales' };
-      const { data: agent, error } = existing
-        ? await supabase.from('outbound_agents').update(row).eq('id', existing.id).select().single()
-        : await supabase.from('outbound_agents').insert(row).select().single();
+      const row = { client_id: client.id, label: 'Mash — Sales Outreach (cold calls)', vapi_agent_id: assistant.id, vapi_phone_number_id: client.vapi_phone_number_id, purpose: 'sales' };
+      if (existing) {
+        await supabase.from('outbound_agents').update(row).eq('id', existing.id);
+        console.log('Sales agent synced to VAPI:', assistant.id);
+        return;
+      }
+      const { error } = await supabase.from('outbound_agents').insert(row);
       if (error) throw error;
-      res.json({ success: true, agent, created: !existing });
+      console.log('Sales agent created in VAPI:', assistant.id);
+      await notifyAdmin('Mash sales agent created in VAPI', 'Sales Agent Created', [
+        ['Assistant ID', assistant.id], ['Name', assistant.name], ['Voice', `${assistant.voice?.provider} ${assistant.voice?.voiceId}`],
+        ['Caller ID', `${client.phone_number || ''} (${client.vapi_phone_number_id})`],
+        ['Tools', (assistant.model?.tools || []).map(t => t.function?.name || t.type).join(', ')]
+      ]);
     } catch (err) {
-      console.error('Sales agent setup error:', err.message);
-      res.status(500).json({ error: err.message });
+      console.error('Sales agent sync failed:', err.message);
+      await notifyAdmin('Mash sales agent setup FAILED', 'Sales Agent Setup Failed', [['Error', err.message]], 'Paste this error to Claude to fix.');
     }
-  });
+  }
+  setTimeout(syncSalesAgent, 5000);
 
   // ── Do-not-call list ────────────────────────────────────────────────────────
   app.get('/outreach/dnc', requireAdmin, async (req, res) => {
@@ -480,7 +469,7 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
           const mobile = normalizeAuPhone(a.mobile) || (isAuMobile(normalizeAuPhone(calledNumber)) ? normalizeAuPhone(calledNumber) : null);
           const sent = [];
           if (mobile) {
-            const sms = await sendSms(mobile, `Hi${a.name ? ' ' + a.name.split(' ')[0] : ''}, it's Mia from Mash AI. Here's your free 7-day trial link: ${TRIAL_LINK} . Questions? Reply or email hello@mashai.com.au. Reply STOP to opt out.`);
+            const sms = await sendSms(mobile, `Hi${a.name ? ' ' + a.name.split(' ')[0] : ''}, it's Mash, the AI assistant from Mash AI. Here's your free 7-day trial link: ${TRIAL_LINK} . Questions? Reply or email hello@mashai.com.au. Reply STOP to opt out.`);
             if (sms.sent) sent.push('text message'); else console.log('Trial SMS not sent:', sms.reason);
           }
           if (a.email && /@/.test(a.email)) {
@@ -490,7 +479,7 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
                 subject: 'Your Mash AI free trial link',
                 html: `<div style="font-family:Segoe UI,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#151129;">
                   <p>Hi${a.name ? ' ' + esc(a.name.split(' ')[0]) : ''},</p>
-                  <p>Thanks for chatting with Mia from Mash AI just now. As promised, here's the link to start your free 7-day trial. Setup takes about five minutes, and our team builds and tests your AI receptionist, usually within 24 hours.</p>
+                  <p>Thanks for chatting with Mash, our AI assistant, just now. As promised, here's the link to start your free 7-day trial. Setup takes about five minutes, and our team builds and tests your AI receptionist, usually within 24 hours.</p>
                   <p style="text-align:center;margin:28px 0;"><a href="${TRIAL_LINK}" style="background:linear-gradient(135deg,#534AB7,#7F77DD);color:white;padding:13px 24px;border-radius:8px;text-decoration:none;font-weight:700;">Start my free trial</a></p>
                   <p>Plans start at $149/month, with no setup fees and no lock-in. You won't be charged until day 8, and you can cancel any time.</p>
                   <p>Questions? Just reply to hello@mashai.com.au, or call the number we rang you from.</p>
