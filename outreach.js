@@ -206,10 +206,7 @@ function salesAssistantConfig(backendUrl) {
           }
         }
       },
-      successEvaluationPlan: {
-        rubric: 'PassFail',
-        prompt: 'Pass if a demo was booked, a trial link was sent, or a callback with a decision maker was arranged, AND the assistant disclosed it was an AI and honoured any opt-out immediately.'
-      }
+      successEvaluationPlan: { rubric: 'PassFail' }
     }
   };
 }
