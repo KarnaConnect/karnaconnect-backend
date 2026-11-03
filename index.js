@@ -42,6 +42,9 @@ try {
   console.log('Firebase Admin initialization error:', err.message);
 }
 
+// Mash sales outreach (cold-call agent, compliant pacing, call tools)
+const outreach = require('./outreach')(app, { supabase, resend });
+
 async function getClientIdFromPhoneNumberId(phoneNumberId) {
   if (!phoneNumberId) return null
 
@@ -413,6 +416,9 @@ app.post('/webhook/vapi', async (req, res) => {
   }
 
   console.log('Call saved successfully');
+
+  // Update the campaign contact if this was a sales outreach call
+  await outreach.onCallEnded(message).catch(err => console.error('Outreach call update failed:', err.message));
 
   // Copy the recording into our own storage now — VAPI only serves recordings for 14 days
   if (recordingUrl && call.id) {
@@ -909,22 +915,64 @@ cron.schedule('0 0 * * 1', async () => {
 // Create campaign + contacts
 app.post('/campaigns', async (req, res) => {
   try {
-    const { clientId, outboundAgentId, name, scheduledAt, contacts } = req.body;
+    const { clientId, outboundAgentId, name, scheduledAt, dncCheckedAt, settings = {} } = req.body;
+    let { contacts } = req.body;
     if (!clientId || !outboundAgentId || !name || !scheduledAt || !contacts?.length) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    const campaignRow = { client_id: clientId, outbound_agent_id: outboundAgentId, name, scheduled_at: scheduledAt };
+    let skipped = { invalid: 0, duplicate: 0, doNotCall: 0 };
+
+    // Sales (cold outreach) campaigns: list must be washed against the Do Not Call
+    // Register within the last 30 days, numbers are cleaned and checked against
+    // our own do-not-call list, and calls are paced inside calling hours.
+    if (await outreach.isSalesAgent(outboundAgentId)) {
+      const washed = dncCheckedAt ? new Date(dncCheckedAt) : null;
+      if (!washed || isNaN(washed) || (Date.now() - washed.getTime()) > 30 * 86400000) {
+        return res.status(400).json({ error: 'Wash this list against the Do Not Call Register (within the last 30 days) and enter the date before creating a sales campaign.' });
+      }
+      const d = outreach.DEFAULT_SALES_CAMPAIGN;
+      Object.assign(campaignRow, {
+        dnc_checked_at: dncCheckedAt,
+        timezone: settings.timezone || d.timezone,
+        window_start: settings.windowStart || d.window_start,
+        window_end: settings.windowEnd || d.window_end,
+        weekdays_only: settings.weekdaysOnly !== undefined ? !!settings.weekdaysOnly : d.weekdays_only,
+        max_concurrent: Math.min(Math.max(parseInt(settings.maxConcurrent) || d.max_concurrent, 1), 5)
+      });
+      const seen = new Set(), clean = [];
+      for (const c of contacts) {
+        const phone = outreach.normalizeAuPhone(c.phone_number);
+        if (!phone) { skipped.invalid++; continue; }
+        if (seen.has(phone)) { skipped.duplicate++; continue; }
+        seen.add(phone);
+        if (await outreach.isOnDoNotCall(phone)) { skipped.doNotCall++; continue; }
+        clean.push({ ...c, phone_number: phone });
+      }
+      contacts = clean;
+      if (!contacts.length) return res.status(400).json({ error: 'No callable numbers left after cleaning the list', skipped });
+    }
+
+    campaignRow.total_contacts = contacts.length;
     const { data: campaign, error: ce } = await supabase
       .from('campaigns')
-      .insert({ client_id: clientId, outbound_agent_id: outboundAgentId, name, scheduled_at: scheduledAt, total_contacts: contacts.length })
+      .insert(campaignRow)
       .select().single();
     if (ce) throw ce;
 
-    const rows = contacts.map(c => ({ campaign_id: campaign.id, name: c.name || null, phone_number: c.phone_number }));
+    const rows = contacts.map(c => ({
+      campaign_id: campaign.id,
+      name: c.name || null,
+      phone_number: c.phone_number,
+      business_name: c.business_name || null,
+      industry: c.industry || null,
+      suburb: c.suburb || null
+    }));
     const { error: cce } = await supabase.from('campaign_contacts').insert(rows);
     if (cce) throw cce;
 
-    res.json({ success: true, campaignId: campaign.id });
+    res.json({ success: true, campaignId: campaign.id, contacts: rows.length, skipped });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -967,7 +1015,7 @@ app.post('/campaigns/:campaignId/cancel', async (req, res) => {
       .from('campaigns')
       .update({ status: 'cancelled' })
       .eq('id', req.params.campaignId)
-      .eq('status', 'scheduled');
+      .in('status', ['scheduled', 'running', 'waiting']);
     if (error) throw error;
     res.json({ success: true });
   } catch (err) {
@@ -1047,16 +1095,18 @@ cron.schedule('* * * * *', async () => {
   try {
     const { data: due } = await supabase
       .from('campaigns')
-      .select('*')
+      .select('*, outbound_agents(purpose)')
       .eq('status', 'scheduled')
       .lte('scheduled_at', new Date().toISOString());
 
-    for (const campaign of due || []) {
+    // Sales campaigns are paced separately (calling hours, one call at a time)
+    for (const campaign of (due || []).filter(c => c.outbound_agents?.purpose !== 'sales')) {
       runCampaign(campaign).catch(err => console.error('Campaign error:', err.message));
     }
   } catch (err) {
     console.error('Campaign cron error:', err.message);
   }
+  await outreach.tickSalesCampaigns();
 });
 
 // ── Recordings ───────────────────────────────────────────────────────────────
@@ -1165,7 +1215,7 @@ app.get('/outbound-agents/:clientId', async (req, res) => {
     const { clientId } = req.params;
     const { data, error } = await supabase
       .from('outbound_agents')
-      .select('id, label, vapi_agent_id, vapi_phone_number_id')
+      .select('id, label, vapi_agent_id, vapi_phone_number_id, purpose')
       .eq('client_id', clientId)
       .order('created_at');
     if (error) throw error;
@@ -1181,6 +1231,9 @@ app.post('/call/outbound', async (req, res) => {
     const { agentId, phoneNumberId, customerNumber, customerName } = req.body;
     if (!agentId || !phoneNumberId || !customerNumber) {
       return res.status(400).json({ error: 'agentId, phoneNumberId and customerNumber are required' });
+    }
+    if (await outreach.isOnDoNotCall(customerNumber)) {
+      return res.status(400).json({ error: 'This number is on the Mash do-not-call list' });
     }
     const vapiRes = await fetch('https://api.vapi.ai/call/phone', {
       method: 'POST',
