@@ -427,7 +427,7 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
   }
 
   async function mashClient() {
-    const { data } = await supabase.from('clients').select('id, business_name, phone_number, vapi_phone_number_id').eq('business_name', 'Mash AI').maybeSingle();
+    const { data } = await supabase.from('clients').select('id, business_name, phone_number, vapi_phone_number_id, vapi_agent_id').eq('business_name', 'Mash AI').maybeSingle();
     return data;
   }
 
@@ -470,6 +470,57 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
     }
   }
   setTimeout(syncSalesAgent, 5000);
+
+  // The inbound Mash assistant (Mash AI client's vapi_agent_id) is managed in VAPI, not here.
+  // Its prompt told the model to "always mention at the start" that the call may be recorded,
+  // and the greeting already says it, so the model repeated the notice on most turns.
+  // This swaps that one rule in place and leaves the rest of the live prompt untouched.
+  const RECORDING_RULE_FIXED = '- The greeting has already told the caller this call may be recorded. Never say it again during the call.';
+  async function fixInboundRecordingNotice() {
+    try {
+      const client = await mashClient();
+      if (!client?.vapi_agent_id) throw new Error('No "Mash AI" client with an inbound vapi_agent_id');
+      const url = `https://api.vapi.ai/assistant/${client.vapi_agent_id}`;
+      const headers = { 'Authorization': `Bearer ${process.env.VAPI_API_KEY}`, 'Content-Type': 'application/json' };
+      const getRes = await fetch(url, { headers });
+      const assistant = await getRes.json();
+      if (!getRes.ok) throw new Error('VAPI GET failed: ' + JSON.stringify(assistant.message || assistant));
+
+      const model = assistant.model || {};
+      const messages = model.messages || [];
+      const sys = messages.find(m => m.role === 'system');
+      if (!sys?.content) throw new Error('Inbound assistant has no system prompt');
+      if (sys.content.includes(RECORDING_RULE_FIXED)) return console.log('Inbound recording notice already fixed');
+
+      const lines = sys.content.split('\n');
+      let changed = 0;
+      // First matching rule becomes the fixed rule; any later duplicates are dropped.
+      const out = [];
+      for (const line of lines) {
+        if (/^\s*-\s.*\brecorded\b/i.test(line) && /\b(always|start|mention)\b/i.test(line)) {
+          if (!changed++) out.push(RECORDING_RULE_FIXED);
+          continue;
+        }
+        out.push(line);
+      }
+      if (!changed) throw new Error('Could not find the "always mention this call may be recorded" rule in the inbound prompt');
+
+      const newModel = { ...model, messages: messages.map(m => m === sys ? { ...m, content: out.join('\n') } : m) };
+      const patchRes = await fetch(url, { method: 'PATCH', headers, body: JSON.stringify({ model: newModel }) });
+      const patched = await patchRes.json();
+      if (!patchRes.ok) throw new Error('VAPI rejected the update: ' + JSON.stringify(patched.message || patched));
+      console.log('Inbound recording notice fixed on', client.vapi_agent_id);
+      await notifyAdmin('Mash inbound: recording notice now said once', 'Inbound Agent Updated', [
+        ['Assistant ID', client.vapi_agent_id],
+        ['Greeting (unchanged)', assistant.firstMessage || '(none)'],
+        ['Rule replaced', RECORDING_RULE_FIXED]
+      ]);
+    } catch (err) {
+      console.error('Inbound recording notice fix failed:', err.message);
+      await notifyAdmin('Mash inbound recording-notice fix FAILED', 'Inbound Agent Update Failed', [['Error', err.message]], 'Paste this error to Claude to fix.');
+    }
+  }
+  setTimeout(fixInboundRecordingNotice, 8000);
 
   // ── Do-not-call list ────────────────────────────────────────────────────────
   app.get('/outreach/dnc', requireAdmin, async (req, res) => {
