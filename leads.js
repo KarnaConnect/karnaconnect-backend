@@ -365,11 +365,88 @@ module.exports = function registerLeads(app, deps) {
     throw new Error(`OpenStreetMap search failed: ${errors.join('; ')}`);
   }
 
+  // ── Google Places (used when GOOGLE_PLACES_API_KEY is set on Railway) ──────
+  // Search phrases per industry; each is run as "<phrase> in <area> WA".
+  const GOOGLE_QUERIES = {
+    trades: ['plumber', 'electrician', 'builder', 'carpenter', 'roofer', 'tiler', 'painter', 'air conditioning installer'],
+    hair_beauty: ['hair salon', 'barber', 'beauty salon', 'nail salon', 'massage', 'day spa'],
+    health_clinics: ['physiotherapist', 'chiropractor', 'dentist', 'podiatrist', 'psychologist', 'medical centre'],
+    automotive: ['mechanic', 'car service', 'auto electrician', 'panel beater', 'tyre shop'],
+    real_estate: ['real estate agent', 'property management'],
+    hospitality: ['restaurant', 'cafe', 'catering'],
+    home_services: ['cleaning service', 'pest control', 'gardener', 'locksmith', 'removalist', 'pool service'],
+    professional_services: ['accountant', 'lawyer', 'mortgage broker', 'bookkeeper', 'insurance broker'],
+    fitness: ['gym', 'personal trainer', 'yoga studio', 'pilates studio', 'martial arts'],
+    pet_vet: ['veterinary clinic', 'dog groomer', 'pet boarding', 'dog trainer']
+  };
+  const googleKey = () => process.env.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_MAPS_API_KEY || '';
+  async function googleTextSearch(textQuery, center, radius) {
+    const out = [];
+    let pageToken;
+    for (let page = 0; page < 3; page++) {
+      const body = { textQuery, regionCode: 'AU', pageSize: 20 };
+      if (center) body.locationBias = { circle: { center: { latitude: center.lat, longitude: center.lon }, radius: Math.min(radius, 50000) } };
+      if (pageToken) body.pageToken = pageToken;
+      const r = await fetch('https://places.googleapis.com/v1/places:searchText', {
+        method: 'POST', signal: AbortSignal.timeout(20000),
+        headers: {
+          'Content-Type': 'application/json', 'X-Goog-Api-Key': googleKey(),
+          'X-Goog-FieldMask': 'places.id,places.displayName,places.nationalPhoneNumber,places.internationalPhoneNumber,places.websiteUri,places.formattedAddress,places.addressComponents,places.businessStatus,nextPageToken'
+        },
+        body: JSON.stringify(body)
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(`Google search failed (${r.status}${j?.error?.message ? ': ' + j.error.message : ''})`);
+      out.push(...(j.places || []));
+      pageToken = j.nextPageToken;
+      if (!pageToken) break;
+      await new Promise(res => setTimeout(res, 1500));
+    }
+    return out;
+  }
+  async function googleCandidates(industry, area, center, radius, stats) {
+    const rows = [];
+    for (const phrase of GOOGLE_QUERIES[industry] || [industries.getIndustry(industry).label]) {
+      const places = await googleTextSearch(`${phrase} in ${area}${/\bWA\b|western australia/i.test(area) ? '' : ' WA'}`, center, radius);
+      stats.found += places.length;
+      for (const p of places) {
+        if (p.businessStatus && p.businessStatus !== 'OPERATIONAL') continue;
+        const phone = normalizeAuPhone(p.nationalPhoneNumber || p.internationalPhoneNumber || '');
+        if (!phone) { stats.noPhone++; continue; }
+        const comp = (type) => (p.addressComponents || []).find(c => (c.types || []).includes(type))?.longText || null;
+        if (comp('administrative_area_level_1') && !/western australia|^wa$/i.test(comp('administrative_area_level_1'))) continue;
+        rows.push({
+          business_name: (p.displayName?.text || '').slice(0, 200),
+          phone_number: phone,
+          industry,
+          suburb: comp('locality'),
+          address: (p.formattedAddress || '').replace(/, Australia$/, '') || null,
+          website: p.websiteUri || null,
+          email: null,
+          source: 'Google',
+          source_ref: `google:${p.id}`
+        });
+      }
+    }
+    return rows.filter(r => r.business_name);
+  }
+
   async function findLeads({ industry, area, radiusKm = 8, enrichEmails = true, place: knownPlace }) {
     const ind = industries.getIndustry(industry);
     if (!ind) throw new Error('Unknown industry');
-    const place = knownPlace || await geocode(area);
+    if (googleKey()) return saveCandidates(industry, area, radiusKm, enrichEmails, knownPlace, 'google');
+    return saveCandidates(industry, area, radiusKm, enrichEmails, knownPlace, 'osm');
+  }
+
+  async function saveCandidates(industry, area, radiusKm, enrichEmails, knownPlace, via) {
+    const ind = industries.getIndustry(industry);
     const radius = Math.min(Math.max(+radiusKm || 8, 1), 30) * 1000;
+    if (via === 'google') {
+      const stats = { found: 0, added: 0, alreadyListed: 0, noPhone: 0, chains: 0, doNotCall: 0, withEmail: 0 };
+      const rows = await googleCandidates(industry, area, knownPlace, radius, stats);
+      return finishLeads(rows, stats, enrichEmails, `${area}, WA`);
+    }
+    const place = knownPlace || await geocode(area);
     const parts = ind.osm.map(([k, v]) => `nwr["${k}"="${v}"](around:${radius},${place.lat},${place.lon});`).join('');
     const q = `[out:json][timeout:60];(${parts});out center tags 500;`;
     const elements = await overpass(q);
@@ -399,6 +476,12 @@ module.exports = function registerLeads(app, deps) {
       });
     }
 
+    return finishLeads(rows, stats, enrichEmails, place.name);
+  }
+
+  async function finishLeads(allRows, stats, enrichEmails, areaName) {
+    const seenPhones = new Set();
+    const rows = allRows.filter(r => !seenPhones.has(r.phone_number) && seenPhones.add(r.phone_number));
     // Skip numbers already in the pipeline or on the do-not-call list
     const phones = rows.map(r => r.phone_number);
     const existing = new Set(), blocked = new Set();
@@ -427,7 +510,7 @@ module.exports = function registerLeads(app, deps) {
       if (error) throw error;
     }
     stats.added = fresh.length;
-    return { area: place.name, stats, leads: fresh };
+    return { area: areaName, stats, leads: fresh };
   }
 
   // ── Admin routes for the dashboard ────────────────────────────────────────
@@ -604,7 +687,7 @@ module.exports = function registerLeads(app, deps) {
   async function seedStarterLeads() {
     if (process.env.SEED_LEADS === 'off') return;
     seedAttempts++;
-    const { count } = await supabase.from('leads').select('*', { count: 'exact', head: true }).eq('source', 'OpenStreetMap');
+    const { count } = await supabase.from('leads').select('*', { count: 'exact', head: true }).eq('source', googleKey() ? 'Google' : 'OpenStreetMap');
     if (count) return;
     console.log('Seeding starter leads for southern suburbs...');
     seedTrace('start');
