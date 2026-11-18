@@ -12,6 +12,9 @@
 const crypto = require('crypto');
 const industries = require('./industries');
 
+// Railway has no IPv6 egress; without this, fetches to dual-stack hosts like the OSM servers can hang.
+try { require('dns').setDefaultResultOrder('ipv4first'); } catch {}
+try { require('net').setDefaultAutoSelectFamily?.(true); } catch {}
 const UA = 'MashAI-LeadFinder/1.0 (hello@mashai.com.au)';
 const DNCR_VALID_DAYS = 30;
 const MAX_ATTEMPTS = 3;          // cold-call attempts before 'unreachable'
@@ -345,18 +348,19 @@ module.exports = function registerLeads(app, deps) {
   // Overpass servers are free and often busy: try each with a timeout.
   const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
   async function overpass(q) {
-    let last;
+    const errors = [];
     for (const url of OVERPASS) {
+      const t0 = Date.now();
       try {
         const r = await fetch(url, {
           method: 'POST', signal: AbortSignal.timeout(90000),
           headers: { 'User-Agent': UA, Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q)
         });
-        if (!r.ok) { last = new Error(`OpenStreetMap search failed (${r.status} from ${new URL(url).host})`); continue; }
+        if (!r.ok) { errors.push(`${new URL(url).host} ${r.status} ${Math.round((Date.now() - t0) / 1000)}s`); continue; }
         return (await r.json()).elements || [];
-      } catch (err) { last = new Error(`OpenStreetMap search failed (${err.name === 'TimeoutError' ? 'timeout' : err.message} from ${new URL(url).host})`); }
+      } catch (err) { errors.push(`${new URL(url).host} ${err.name === 'TimeoutError' ? 'timeout' : (err.cause?.code || err.message)} ${Math.round((Date.now() - t0) / 1000)}s`); }
     }
-    throw last;
+    throw new Error(`OpenStreetMap search failed: ${errors.join('; ')}`);
   }
 
   async function findLeads({ industry, area, radiusKm = 8, enrichEmails = true, place: knownPlace }) {
@@ -601,17 +605,20 @@ module.exports = function registerLeads(app, deps) {
     console.log('Seeding starter leads for southern suburbs...');
     seedTrace('start');
     const totals = {};
+    let failsInARow = 0;
     for (const key of Object.keys(industries.INDUSTRIES)) {
       totals[key] = { added: 0, withEmail: 0 };
       for (const area of SEED_AREAS) {
         try {
           const r = await findLeads({ industry: key, area: area.name, radiusKm: 6, place: area });
           seedTrace(`${key} ${area.name} found=${r.stats.found} added=${r.stats.added} email=${r.stats.withEmail}`);
+          failsInARow = 0;
           totals[key].added += r.stats.added;
           totals[key].withEmail += r.stats.withEmail;
         } catch (err) {
           console.error('Seed failed:', key, area.name, err.message);
           seedTrace(`FAIL ${key} ${area.name} ${err.message}`);
+          if (++failsInARow >= 4) { seedTrace('gave up'); return; }
         }
         await new Promise(r => setTimeout(r, 3000)); // be polite to the free OSM servers
       }
