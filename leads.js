@@ -318,7 +318,8 @@ module.exports = function registerLeads(app, deps) {
   // ── Lead finder (OpenStreetMap) ───────────────────────────────────────────
   async function geocode(area) {
     const q = /australia|wa\b|western/i.test(area) ? area : `${area}, Western Australia, Australia`;
-    const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=au&q=${encodeURIComponent(q)}`, { headers: { 'User-Agent': UA } });
+    const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=au&q=${encodeURIComponent(q)}`, { headers: { 'User-Agent': UA, Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new Error(`Map lookup failed (${r.status})`);
     const j = await r.json();
     if (!j?.length) throw new Error(`Couldn't find "${area}" on the map`);
     return { lat: +j[0].lat, lon: +j[0].lon, name: j[0].display_name };
@@ -341,18 +342,31 @@ module.exports = function registerLeads(app, deps) {
     } catch { return null; }
   }
 
-  async function findLeads({ industry, area, radiusKm = 8, enrichEmails = true }) {
+  // Overpass servers are free and often busy: try each with a timeout.
+  const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
+  async function overpass(q) {
+    let last;
+    for (const url of OVERPASS) {
+      try {
+        const r = await fetch(url, {
+          method: 'POST', signal: AbortSignal.timeout(90000),
+          headers: { 'User-Agent': UA, Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q)
+        });
+        if (!r.ok) { last = new Error(`OpenStreetMap search failed (${r.status} from ${new URL(url).host})`); continue; }
+        return (await r.json()).elements || [];
+      } catch (err) { last = new Error(`OpenStreetMap search failed (${err.name === 'TimeoutError' ? 'timeout' : err.message} from ${new URL(url).host})`); }
+    }
+    throw last;
+  }
+
+  async function findLeads({ industry, area, radiusKm = 8, enrichEmails = true, place: knownPlace }) {
     const ind = industries.getIndustry(industry);
     if (!ind) throw new Error('Unknown industry');
-    const place = await geocode(area);
+    const place = knownPlace || await geocode(area);
     const radius = Math.min(Math.max(+radiusKm || 8, 1), 30) * 1000;
     const parts = ind.osm.map(([k, v]) => `nwr["${k}"="${v}"](around:${radius},${place.lat},${place.lon});`).join('');
     const q = `[out:json][timeout:60];(${parts});out center tags 500;`;
-    const r = await fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST', headers: { 'User-Agent': UA, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q)
-    });
-    if (!r.ok) throw new Error(`OpenStreetMap search failed (${r.status})`);
-    const elements = (await r.json()).elements || [];
+    const elements = await overpass(q);
 
     const stats = { found: elements.length, added: 0, alreadyListed: 0, noPhone: 0, chains: 0, doNotCall: 0, withEmail: 0 };
     const rows = [];
@@ -570,27 +584,40 @@ module.exports = function registerLeads(app, deps) {
   // ── One-off starter list: every industry across Perth's southern suburbs ──
   // Runs once on startup when no OpenStreetMap leads exist yet. Adil chose the
   // southern suburbs on 18 Nov 2026. Nothing is called: leads land as 'new'.
-  const SEED_AREAS = ['Cockburn Central', 'Fremantle', 'Booragoon', 'Rockingham', 'Kwinana Town Centre'];
+  // Fixed points so the seed doesn't depend on the geocoder.
+  const SEED_AREAS = [
+    { name: 'Cockburn Central', lat: -32.1219, lon: 115.8478 },
+    { name: 'Fremantle', lat: -32.0569, lon: 115.7439 },
+    { name: 'Booragoon', lat: -32.0390, lon: 115.8340 },
+    { name: 'Rockingham', lat: -32.2799, lon: 115.7300 },
+    { name: 'Kwinana Town Centre', lat: -32.2394, lon: 115.7702 }
+  ];
+  // Leaves a readable trail in the Supabase API logs (a harmless read), since Railway logs aren't reachable from support tooling.
+  const seedTrace = (msg) => supabase.from('leads').select('id').eq('source_ref', `seed-trace:${String(msg).slice(0, 180)}`).limit(1).then(() => {}, () => {});
   async function seedStarterLeads() {
     if (process.env.SEED_LEADS === 'off') return;
     const { count } = await supabase.from('leads').select('*', { count: 'exact', head: true }).eq('source', 'OpenStreetMap');
     if (count) return;
     console.log('Seeding starter leads for southern suburbs...');
+    seedTrace('start');
     const totals = {};
     for (const key of Object.keys(industries.INDUSTRIES)) {
       totals[key] = { added: 0, withEmail: 0 };
       for (const area of SEED_AREAS) {
         try {
-          const r = await findLeads({ industry: key, area, radiusKm: 6 });
+          const r = await findLeads({ industry: key, area: area.name, radiusKm: 6, place: area });
+          seedTrace(`${key} ${area.name} found=${r.stats.found} added=${r.stats.added} email=${r.stats.withEmail}`);
           totals[key].added += r.stats.added;
           totals[key].withEmail += r.stats.withEmail;
         } catch (err) {
-          console.error('Seed failed:', key, area, err.message);
+          console.error('Seed failed:', key, area.name, err.message);
+          seedTrace(`FAIL ${key} ${area.name} ${err.message}`);
         }
         await new Promise(r => setTimeout(r, 3000)); // be polite to the free OSM servers
       }
       console.log('Seeded', key, totals[key]);
     }
+    seedTrace('done');
     await notifyAdmin('Mash lead lists are ready', 'Starter Leads Found',
       Object.entries(totals).map(([k, t]) => [industries.getIndustry(k).label, `${t.added} businesses (${t.withEmail} with email)`]),
       'Nothing has been called. Review them on the Leads page.');
