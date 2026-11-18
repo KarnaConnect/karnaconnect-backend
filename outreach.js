@@ -886,6 +886,27 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
       const { data } = await supabase.from('do_not_call').select('phone_number').eq('phone_number', phone).maybeSingle();
       return !!data;
     },
+    // Single Call tab: when the chosen assistant is the sales agent, give it the same variables a real call gets
+    isSalesAgentVapiId: async (vapiId) => {
+      if (!vapiId) return false;
+      const { data } = await supabase.from('outbound_agents').select('id').eq('vapi_agent_id', vapiId).eq('purpose', 'sales').limit(1);
+      return !!data?.length;
+    },
+    testCallVariables: (name) => {
+      const ind = industries.getIndustry('trades');
+      return {
+        businessName: name ? `${name}'s Plumbing` : 'your business',
+        contactName: name || '',
+        industry: ind.label,
+        suburb: 'South Lake',
+        knownEmail: '',
+        industryPlaybook: ind.playbook,
+        today: perthToday(),
+        callType: 'cold',
+        previousSummary: '',
+        lastCallDate: ''
+      };
+    },
     DEFAULT_SALES_CAMPAIGN,
     // exported for tests
     leads: leadsMod,
