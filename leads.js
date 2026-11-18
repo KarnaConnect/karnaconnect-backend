@@ -54,6 +54,59 @@ function interestFrom(sd, outcome, endedReason) {
   return 'no_conversation';
 }
 
+// ── Minimal zip writer (deflate), so exports need no extra packages ─────────
+const zlib = require('zlib');
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+function crc32(buf) { let c = 0xffffffff; for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+function makeZip(files) {
+  const parts = [], central = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = Buffer.from(f.name, 'utf8');
+    const comp = zlib.deflateRawSync(f.data);
+    const crc = crc32(f.data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x0800, 6); local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(0, 10); local.writeUInt32LE(crc, 14); local.writeUInt32LE(comp.length, 18); local.writeUInt32LE(f.data.length, 22);
+    local.writeUInt16LE(name.length, 26); local.writeUInt16LE(0, 28);
+    parts.push(local, name, comp);
+    const cen = Buffer.alloc(46);
+    cen.writeUInt32LE(0x02014b50, 0); cen.writeUInt16LE(20, 4); cen.writeUInt16LE(20, 6); cen.writeUInt16LE(0x0800, 8); cen.writeUInt16LE(8, 10);
+    cen.writeUInt32LE(0, 12); cen.writeUInt32LE(crc, 16); cen.writeUInt32LE(comp.length, 20); cen.writeUInt32LE(f.data.length, 24);
+    cen.writeUInt16LE(name.length, 28); cen.writeUInt32LE(offset, 42);
+    central.push(cen, name);
+    offset += 30 + name.length + comp.length;
+  }
+  const cenBuf = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(cenBuf.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, cenBuf, end]);
+}
+const EXPORT_README = (n) => `Mash Leads (${n} businesses)
+
+One folder per industry, each with leads.csv. Sources: Google Places and OpenStreetMap
+(© OpenStreetMap contributors, ODbL). The Leads page in the dashboard is the live copy;
+these files are a snapshot from the day you downloaded them.
+
+How calls and emails work together
+1. Pick leads on the Leads page and press "Call with Mash". Mash calls each industry only
+   in its best time slot.
+2. If the person is interested, Mash asks whether it can email a short summary and
+   confirms the address. Only after a yes does the email go out (recap, trial link,
+   pricing, unsubscribe link).
+3. The lead lands in Hot, Wants more info, On the fence or Not interested. Hot leads come
+   to you; the others get up to two follow-up calls from Mash, or you can take them.
+
+Rules (Australian law)
+- Wash every list against the Do Not Call Register (donotcall.gov.au) before calling;
+  a wash lasts 30 days. Record the wash date on the Leads page or Mash won't call.
+- Calling hours: weekdays 9am-8pm, Saturday 9am-5pm, never Sundays or national holidays.
+- Anyone who says "don't call" goes on the do-not-call list straight away.
+- Don't bulk-email these addresses. Under the Spam Act, email only people who agreed on
+  the call. The dashboard does this for you.
+`;
+
 module.exports = function registerLeads(app, deps) {
   const { supabase, resend, requireAdmin, normalizeAuPhone, canCallNow, nextCallableTime, addToDoNotCall, notifyAdmin, dial, perthToday } = deps;
 
@@ -518,17 +571,49 @@ module.exports = function registerLeads(app, deps) {
   // ── Admin routes for the dashboard ────────────────────────────────────────
   app.get('/leads/industries', requireAdmin, (req, res) => res.json(industries.listIndustries()));
 
+  // Supabase returns at most 1000 rows per request, so page through.
+  async function fetchAllLeads(build, max = 20000) {
+    const out = [];
+    for (let from = 0; from < max; from += 1000) {
+      const { data, error } = await build().range(from, from + 999);
+      if (error) throw error;
+      out.push(...(data || []));
+      if (!data || data.length < 1000) break;
+    }
+    return out;
+  }
+
   app.get('/leads', requireAdmin, async (req, res) => {
     try {
-      let q = supabase.from('leads').select('*').order('updated_at', { ascending: false }).limit(1000);
-      if (req.query.status) q = q.in('status', String(req.query.status).split(','));
-      if (req.query.industry) q = q.eq('industry', req.query.industry);
-      const { data, error } = await q;
-      if (error) throw error;
-      const { data: all } = await supabase.from('leads').select('status, industry');
+      const data = await fetchAllLeads(() => {
+        let q = supabase.from('leads').select('*').order('updated_at', { ascending: false }).order('id');
+        if (req.query.status) q = q.in('status', String(req.query.status).split(','));
+        if (req.query.industry) q = q.eq('industry', req.query.industry);
+        return q;
+      });
+      const all = (req.query.status || req.query.industry) ? await fetchAllLeads(() => supabase.from('leads').select('status').order('id')) : data;
       const counts = {};
-      for (const r of all || []) counts[r.status] = (counts[r.status] || 0) + 1;
-      res.json({ leads: data, counts, total: (all || []).length, settings: await settings(), industries: industries.listIndustries() });
+      for (const r of all) counts[r.status] = (counts[r.status] || 0) + 1;
+      res.json({ leads: data, counts, total: all.length, settings: await settings(), industries: industries.listIndustries() });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // One zip with a folder per industry, each holding leads.csv, for Adil's Marketing folder.
+  app.get('/leads/export.zip', requireAdmin, async (req, res) => {
+    try {
+      const leads = await fetchAllLeads(() => supabase.from('leads').select('business_name, phone_number, email, email_opt_out, website, suburb, address, industry, status, last_outcome, source').order('suburb', { nullsFirst: false }).order('business_name').order('id'));
+      const esc = v => { const t = v == null ? '' : String(v); return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+      const files = [];
+      for (const ind of industries.listIndustries()) {
+        const rows = leads.filter(l => l.industry === ind.key);
+        const lines = [['Business', 'Phone', 'Email', 'Website', 'Suburb', 'Address', 'Status', 'Last outcome', 'Source'].join(',')];
+        for (const l of rows) lines.push([l.business_name, l.phone_number, l.email_opt_out ? '' : l.email, l.website, l.suburb, l.address, l.status, l.last_outcome, l.source].map(esc).join(','));
+        files.push({ name: `Mash Leads/${ind.folder}/leads.csv`, data: Buffer.from('\ufeff' + lines.join('\r\n') + '\r\n', 'utf8') });
+      }
+      files.push({ name: 'Mash Leads/README.txt', data: Buffer.from(EXPORT_README(leads.length), 'utf8') });
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="Mash Leads ${new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10)}.zip"`);
+      res.send(makeZip(files));
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
