@@ -1261,7 +1261,9 @@ app.post('/call/outbound', async (req, res) => {
       body: JSON.stringify({
         assistantId: agentId,
         phoneNumberId,
-        customer: { number: customerNumber, name: customerName || undefined }
+        customer: { number: customerNumber, name: customerName || undefined },
+        // Test calls from the dashboard to the sales agent get the same variables a campaign call would
+        ...(await outreach.isSalesAgentVapiId(agentId) ? { assistantOverrides: { variableValues: outreach.testCallVariables(customerName) } } : {})
       })
     });
     const result = await vapiRes.json();

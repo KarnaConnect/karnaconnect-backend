@@ -9,6 +9,8 @@
 // Only campaigns run by an outbound agent with purpose = 'sales' use this pacing.
 // Other outbound agents (e.g. Platinum's pickup notifications) keep the old runner.
 
+const industries = require('./industries');
+
 const SALES_AGENT_NAME = 'Mash — Sales Outreach';
 const TRIAL_LINK = 'https://dashboard.mashai.com.au/onboarding';
 const ADMIN_EMAIL = 'syedadilshah@live.com';
@@ -30,14 +32,27 @@ const DEFAULT_SALES_CAMPAIGN = {
 
 const SALES_PROMPT = `Your name is Mash. You are the AI sales rep for Mash AI, a Perth-based Australian company that gives businesses an AI receptionist that answers every call, 24/7. You share your name with the product: you ARE Mash, so this call is a live demo of what you're selling.
 
-This is an OUTBOUND COLD CALL to a business that has NOT contacted us before.
+{% if callType == 'follow_up' %}This is a FOLLOW-UP CALL to a business you've spoken to before (see FOLLOW-UP below).{% else %}This is an OUTBOUND COLD CALL to a business that has NOT contacted us before.{% endif %}
+Today is {{today}} (Perth time).
 
 What we know about them (blank means unknown; never read out a blank or a placeholder):
 - Business: {{businessName}}
 - Contact name: {{contactName}}
 - Industry: {{industry}}
 - Suburb: {{suburb}}
+- Email on their public listing: {{knownEmail}}
 
+═══ THEIR INDUSTRY: TAILOR THE CALL ═══
+{{industryPlaybook}}
+Use this to pick your discovery questions, examples and pitch angle. Talk about THEIR kind of day and THEIR customers. Don't read it out like a list.
+{% if callType == 'follow_up' %}
+═══ FOLLOW-UP ═══
+You spoke with them on {{lastCallDate}}. Summary of that call: {{previousSummary}}
+- Opener: "Hi, it's Mash from Mash AI again. Just so you know, I'm an AI and this call's recorded. We had a quick chat on {{lastCallDate}} about missed calls. Have you got a minute?"
+- Refer to what they said last time (their situation, their questions, any objection) so they know you listened.
+- Answer anything they've been wondering about, then aim for the demo with Adil or the free trial.
+- If they've decided it's not for them, accept it straight away, opt_out, thank them and end the call.
+{% endif %}
 ═══ HOW TO SOUND ═══
 You are a friendly, switched-on Aussie salesperson having a real phone conversation, not a recording reading a script.
 - Talk WITH them, not AT them. Say one short thing (one or two sentences), then stop and let them talk. Most of your turns should end with a question or a natural pause for them to respond.
@@ -68,7 +83,7 @@ Have a genuine conversation, find out if missed calls are a problem for them, an
 Don't push for a sale on this call. If it's not a fit, that's fine; thank them and wrap up.
 
 ═══ CALL FLOW (a guide; adapt to them) ═══
-1. OPENER. They'll usually answer first ("Hello, Bob's Plumbing"). Your first turn, short and natural:
+1. OPENER (cold calls; on a follow-up use the FOLLOW-UP opener). They'll usually answer first ("Hello, Bob's Plumbing"). Your first turn, short and natural:
    "Hi, it's Mash calling from Mash AI here in Perth. Just so you know, I'm an AI assistant and this call's recorded. Am I speaking with the owner{% if businessName != blank %} of {{businessName}}{% endif %}?"
    Then stop and wait.
 
@@ -96,7 +111,11 @@ Don't push for a sale on this call. If it's not a fit, that's fine; thank them a
    - "Just send me something" → offer the free-trial link by text (confirm the mobile) or email, then send_trial_link.
    - "Not right now" → offer the trial link anyway, or a call back later.
 
-8. WRAP UP. Recap the next step ("So Adil will email you to lock in Thursday at 2"), thank them by name, say goodbye, and wait for their goodbye before using endCall.
+8. SUMMARY EMAIL. Unless they've opted out or said they're not interested, before you say goodbye ask: "Would it be OK if I flick you a quick email with a summary of what we talked about, so you've got it in writing?"
+   {% if knownEmail != blank %}If yes, confirm the address: "Is {{knownEmail}} the best one?"{% else %}If yes, ask for their best email and read it back.{% endif %}
+   Then call send_summary_email with the email and a short note of what you discussed. If they say no, that's fine; don't send anything. (If you've already emailed the trial link, don't ask again.)
+
+9. WRAP UP. Recap the next step ("So Adil will email you to lock in Thursday at 2"), thank them by name, say goodbye, and wait for their goodbye before using endCall.
 
 ═══ PRODUCT KNOWLEDGE ═══
 What it is:
@@ -154,11 +173,12 @@ Why it's worth it (use what fits their situation, don't list them all):
 ═══ TOOLS ═══
 - book_demo: once you have name, an email (or mobile) and a preferred day and time.
 - send_trial_link: once they agree to receive it. Pass mobile and/or email.
-- request_callback: when they want a call back at another time.
+- request_callback: when they want a call back at another time. Work out the actual date and time from today's date and pass it as callback_at.
+- send_summary_email: only after they say yes to a summary email.
 - opt_out: whenever they decline, ask not to be called, or it's a wrong number.
 - endCall: ONLY after goodbyes, a confirmed opt-out, a finished voicemail, or a wrong number. Never while they're still talking or asking questions.`;
 
-const FIRST_MESSAGE = "Hi, it's Mash calling from Mash AI here in Perth. Just so you know, I'm an AI assistant and this call's recorded. Am I speaking with the owner{% if businessName != blank %} of {{businessName}}{% endif %}?";
+const FIRST_MESSAGE = "{% if callType == 'follow_up' %}Hi, it's Mash from Mash AI again. Just so you know, I'm an AI assistant and this call's recorded. We had a quick chat on {{lastCallDate}} about missed calls. Have you got a minute?{% else %}Hi, it's Mash calling from Mash AI here in Perth. Just so you know, I'm an AI assistant and this call's recorded. Am I speaking with the owner{% if businessName != blank %} of {{businessName}}{% endif %}?{% endif %}";
 
 const VOICEMAIL_MESSAGE = "Hi, this is Mash, an AI assistant from Mash AI in Perth. I was calling about helping your business answer every call, even after hours. No need to call back. If you're curious, have a look at mash ai dot com dot au. Thanks, and have a great day.";
 
@@ -190,9 +210,15 @@ function salesTools(backendUrl) {
     fn('request_callback', 'Arrange for Mash to call back at a better time, or to reach the owner/manager later.', {
       name: { type: 'string', description: 'Name of the person to call back' },
       business_name: { type: 'string', description: 'Name of their business' },
-      callback_time: { type: 'string', description: 'When to call back, e.g. "tomorrow after 2pm"' },
+      callback_time: { type: 'string', description: 'When to call back in words, e.g. "tomorrow after 2pm"' },
+      callback_at: { type: 'string', description: 'The same time as a local date-time, YYYY-MM-DDTHH:MM (their local time), worked out from today\'s date' },
       notes: { type: 'string', description: 'Context for the callback' }
     }, ['callback_time']),
+    fn('send_summary_email', 'Email the prospect a short summary of the call and how Mash would help them, with the free-trial link. Only after they say yes to receiving it.', {
+      email: { type: 'string', description: 'Their email address, confirmed on the call' },
+      name: { type: 'string', description: 'Their first name, if known' },
+      discussion_notes: { type: 'string', description: 'One or two sentences on what they told you (how they handle calls now, what they care about) and any next step agreed' }
+    }, ['email']),
     fn('opt_out', 'Add this number to the Mash do-not-call list. Use whenever the person declines, asks not to be called again, or it is a wrong number.', {
       reason: { type: 'string', description: 'e.g. "not interested", "asked not to be called", "wrong number"' }
     }),
@@ -242,6 +268,11 @@ function salesAssistantConfig(backendUrl) {
               type: 'string',
               enum: ['Demo Booked', 'Trial Link Sent', 'Callback Requested', 'Interested - Follow Up', 'Not Interested', 'Opted Out', 'Gatekeeper', 'Voicemail', 'Wrong Number', 'No Conversation'],
               description: 'Final result of the call'
+            },
+            interest: {
+              type: 'string',
+              enum: ['hot_lead', 'wants_info', 'on_the_fence', 'not_interested', 'no_conversation'],
+              description: 'hot_lead = booked a demo or clearly keen to sign up; wants_info = asked for the link/details or wants to look into it; on_the_fence = some interest but unsure, or asked for a call back; not_interested = declined or opted out; no_conversation = voicemail, no answer, gatekeeper only or wrong number'
             },
             decision_maker_reached: { type: 'boolean', description: 'Whether the owner or manager was spoken to' },
             opted_out: { type: 'boolean', description: 'True if the person declined or asked not to be called again' },
@@ -333,9 +364,32 @@ function canCallNow(campaign, e164, now = new Date()) {
   if (t.weekday === 'Sun' || isNationalHoliday(t)) return false;
   if (t.weekday === 'Sat' && campaign.weekdays_only !== false) return false;
   const legal = t.weekday === 'Sat' ? LEGAL_WINDOW.saturday : LEGAL_WINDOW.weekday;
-  const start = Math.max(toMinutes(legal[0]), toMinutes(campaign.window_start || legal[0]));
-  const end = Math.min(toMinutes(legal[1]), toMinutes(campaign.window_end || legal[1]));
-  return t.minutes >= start && t.minutes < end;
+  const inside = ([ws, we]) => {
+    const start = Math.max(toMinutes(legal[0]), toMinutes(ws || legal[0]));
+    const end = Math.min(toMinutes(legal[1]), toMinutes(we || legal[1]));
+    return t.minutes >= start && t.minutes < end;
+  };
+  // Industry campaigns carry their own best days and time windows
+  const cw = campaign.call_windows;
+  if (cw && Array.isArray(cw.windows) && cw.windows.length) {
+    if (Array.isArray(cw.days) && cw.days.length && !cw.days.includes(t.weekday)) return false;
+    return cw.windows.some(inside);
+  }
+  return inside([campaign.window_start, campaign.window_end]);
+}
+
+// Next time (UTC Date) at or after `from` when canCallNow is true, stepping 15 min, up to 14 days
+function nextCallableTime(campaign, e164, from = new Date()) {
+  const step = 15 * 60000;
+  let t = new Date(Math.ceil(from.getTime() / step) * step);
+  for (let i = 0; i < 14 * 96; i++, t = new Date(t.getTime() + step)) {
+    if (canCallNow(campaign, e164, t)) return t;
+  }
+  return null;
+}
+
+function perthToday(now = new Date()) {
+  return new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Perth', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(now);
 }
 
 // VAPI tool calls arrive as { message: { type: 'tool-calls', toolCallList: [...] } }
@@ -541,6 +595,12 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
   });
 
   // ── Tools the sales assistant calls during a call ───────────────────────────
+  // Lead pipeline, follow-ups and summary emails (leads.js)
+  const leadsMod = require('./leads')(app, {
+    supabase, resend, requireAdmin, normalizeAuPhone, canCallNow, nextCallableTime,
+    addToDoNotCall, notifyAdmin, dial: (...args) => dial(...args), perthToday
+  });
+
   app.post('/tools/outreach', async (req, res) => {
     const { call, customer, calls } = parseToolCalls(req.body);
     const calledNumber = customer.number || call.customer?.number || '';
@@ -618,12 +678,18 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
           await setContactOutcome(call.id, 'Opted Out');
           result = 'Number added to the do-not-call list. Confirm they won\'t be called again, say goodbye and end the call.';
 
+        } else if (tc.name === 'send_summary_email') {
+          result = await leadsMod.onTool(tc.name, a, call, calledNumber);
+
         } else {
           result = 'Unknown tool.';
         }
       } catch (err) {
         console.error('Outreach tool error:', tc.name, err.message);
         result = 'That didn\'t go through. Tell them the Mash team will follow up personally.';
+      }
+      if (tc.name !== 'send_summary_email') {
+        await leadsMod.onTool(tc.name, a, call, calledNumber).catch(err => console.error('Lead tool update failed:', err.message));
       }
       results.push({ toolCallId: tc.id, result });
     }
@@ -634,7 +700,11 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
   async function onCallEnded(message) {
     const call = message.call || {};
     const contact = await findContactByCall(call.id);
-    if (!contact) return;
+    if (contact) await updateContactOnEnd(message, contact);
+    await leadsMod.onCallEnded(message).catch(err => console.error('Lead update after call failed:', err.message));
+  }
+
+  async function updateContactOnEnd(message, contact) {
     const sd = message.analysis?.structuredData || {};
     const reason = message.endedReason || '';
     const noConnect = /did-not-answer|no-answer|busy|voicemail|failed|error/i.test(reason);
@@ -654,7 +724,9 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
   }
 
   // ── Sales campaign pacing ───────────────────────────────────────────────────
-  async function dial(campaign, agent, contact) {
+  async function dial(campaign, agent, contact, extraVars = {}) {
+    const industryKey = contact.industry_key || industries.matchIndustry(contact.industry) || campaign.industry;
+    const ind = industries.getIndustry(industryKey);
     const vapiRes = await fetch('https://api.vapi.ai/call/phone', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${process.env.VAPI_API_KEY}`, 'Content-Type': 'application/json' },
@@ -666,11 +738,18 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
           variableValues: {
             businessName: contact.business_name || '',
             contactName: contact.name || '',
-            industry: contact.industry || '',
-            suburb: contact.suburb || ''
+            industry: ind ? ind.label : (contact.industry || ''),
+            suburb: contact.suburb || '',
+            knownEmail: contact.email || '',
+            industryPlaybook: ind ? ind.playbook : industries.DEFAULT_PLAYBOOK,
+            today: perthToday(),
+            callType: 'cold',
+            previousSummary: '',
+            lastCallDate: '',
+            ...extraVars
           }
         },
-        metadata: { campaignId: campaign.id, campaignContactId: contact.id }
+        metadata: { campaignId: campaign.id || null, campaignContactId: contact.id || null, leadId: contact.lead_id || null }
       })
     });
     const result = await vapiRes.json().catch(() => ({}));
@@ -701,7 +780,11 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
       .eq('campaign_id', campaign.id).eq('status', 'calling');
     let slots = Math.max(1, campaign.max_concurrent || 1) - (inFlight || 0);
 
-    const { data: pending } = await supabase.from('campaign_contacts').select('*')
+    // One sales call on the line at a time across all campaigns and follow-ups
+    const globalBusy = await salesCallsInFlight();
+    slots = Math.min(slots, Math.max(0, MAX_SALES_IN_FLIGHT - globalBusy));
+
+    const { data: pending } = await supabase.from('campaign_contacts').select('*, leads(email, email_opt_out, status, call_attempts, dncr_checked_at)')
       .eq('campaign_id', campaign.id).eq('status', 'pending').order('created_at').limit(50);
     if (!pending?.length) return finishIfDone(campaign);
 
@@ -718,6 +801,17 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
         await supabase.from('campaign_contacts').update({ status: 'skipped', outcome: 'Do Not Call' }).eq('id', contact.id);
         continue;
       }
+      const lead = contact.leads;
+      if (lead && ['not_interested', 'do_not_call', 'customer', 'hot'].includes(lead.status)) {
+        await supabase.from('campaign_contacts').update({ status: 'skipped', outcome: `Lead is ${lead.status.replace(/_/g, ' ')}` }).eq('id', contact.id);
+        continue;
+      }
+      // DNCR wash results only cover calls in the 30 days after the wash
+      const washed = (lead && lead.dncr_checked_at) || campaign.dnc_checked_at;
+      if (washed && (now - new Date(washed)) > 30 * 86400000) {
+        await supabase.from('campaign_contacts').update({ status: 'skipped', outcome: 'DNCR wash expired', ended_reason: 'Re-wash on the Do Not Call Register' }).eq('id', contact.id);
+        continue;
+      }
       if (!canCallNow(campaign, phone, now)) { blockedByHours++; continue; }
 
       // Claim the contact before dialling so overlapping ticks can't double-dial
@@ -726,8 +820,11 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
         .eq('id', contact.id).eq('status', 'pending').select('id');
       if (!claimed?.length) continue;
       try {
-        const callId = await dial(campaign, agent, { ...contact, phone_number: phone });
+        const callId = await dial(campaign, agent, { ...contact, phone_number: phone, email: lead && !lead.email_opt_out ? lead.email : '' });
         await supabase.from('campaign_contacts').update({ call_id: callId }).eq('id', contact.id);
+        if (contact.lead_id) {
+          await supabase.from('leads').update({ in_flight_call_id: callId, last_called_at: new Date().toISOString(), call_attempts: (lead?.call_attempts || 0) + 1, updated_at: new Date().toISOString() }).eq('id', contact.lead_id);
+        }
         slots--; dialed++;
       } catch (err) {
         console.error('Sales dial failed:', contact.id, err.message);
@@ -741,11 +838,21 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
     await finishIfDone(campaign);
   }
 
+  const MAX_SALES_IN_FLIGHT = 1;
+  async function salesCallsInFlight() {
+    const { count: c1 } = await supabase.from('campaign_contacts').select('id, campaigns!inner(outbound_agents!inner(purpose))', { count: 'exact', head: true })
+      .eq('status', 'calling').eq('campaigns.outbound_agents.purpose', 'sales');
+    const { count: c2 } = await supabase.from('leads').select('*', { count: 'exact', head: true }).not('in_flight_call_id', 'is', null);
+    return (c1 || 0) + (c2 || 0);
+  }
+
   let ticking = false;
   async function tickSalesCampaigns(now = new Date()) {
     if (ticking) return;
     ticking = true;
     try {
+      const s = await leadsMod.settings();
+      if (s.paused) return;
       const { data: campaigns } = await supabase.from('campaigns')
         .select('*, outbound_agents!inner(vapi_agent_id, vapi_phone_number_id, purpose)')
         .eq('outbound_agents.purpose', 'sales')
@@ -754,6 +861,10 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
       for (const c of campaigns || []) {
         await processSalesCampaign(c, c.outbound_agents, now).catch(err => console.error('Sales campaign error:', c.id, err.message));
       }
+      // Follow-ups only when no campaign call is on the line
+      const { count: campaignBusy } = await supabase.from('campaign_contacts').select('id, campaigns!inner(outbound_agents!inner(purpose))', { count: 'exact', head: true })
+        .eq('status', 'calling').eq('campaigns.outbound_agents.purpose', 'sales');
+      await leadsMod.tickFollowUps(now, campaignBusy || 0);
     } catch (err) {
       console.error('Sales campaign tick error:', err.message);
     } finally {
@@ -777,7 +888,8 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
     },
     DEFAULT_SALES_CAMPAIGN,
     // exported for tests
-    _internal: { canCallNow, isNationalHoliday, localParts, recipientTimezone, salesAssistantConfig }
+    leads: leadsMod,
+    _internal: { canCallNow, nextCallableTime, isNationalHoliday, localParts, recipientTimezone, salesAssistantConfig }
   };
 };
 
