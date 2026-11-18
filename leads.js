@@ -708,8 +708,8 @@ module.exports = function registerLeads(app, deps) {
           console.error('Seed failed:', key, area.name, err.message);
           seedTrace(`FAIL ${key} ${area.name} ${err.message}`);
           if (++failsInARow >= 4) {
-            // Free map servers are down or busy: try again later, up to 8 times (about a day).
-            if (seedAttempts < 8) { seedTrace(`retry later (attempt ${seedAttempts})`); setTimeout(() => seedStarterLeads().catch(() => {}), 3 * 3600 * 1000); }
+            // Free map servers are down or busy: try again later, hourly, up to 8 times.
+            if (seedAttempts < 8) { seedTrace(`retry later (attempt ${seedAttempts})`); setTimeout(() => seedStarterLeads().catch(() => {}), 3600 * 1000); }
             else seedTrace('gave up');
             return;
           }
