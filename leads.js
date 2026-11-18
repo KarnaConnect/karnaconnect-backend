@@ -1,6 +1,7 @@
 // ── Mash sales leads: find → call → sort → follow up ─────────────────────────
-// - Lead finder: local businesses by industry from OpenStreetMap (free to store,
-//   ODbL licence), plus CSV import. Emails are picked up from listings and the
+// - Lead finder: local businesses by industry from Google Places when
+//   GOOGLE_PLACES_API_KEY is set, otherwise OpenStreetMap (ODbL), plus CSV import.
+//   Emails are picked up from listings and the
 //   business's own website where shown publicly.
 // - Pipeline: every call updates the lead's status (hot, wants_info,
 //   on_the_fence, not_interested, no_answer...) and schedules the next step.
