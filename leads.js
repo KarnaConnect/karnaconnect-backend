@@ -349,7 +349,9 @@ module.exports = function registerLeads(app, deps) {
   const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
   async function overpass(q) {
     const errors = [];
-    for (const url of OVERPASS) {
+    // The main server first (twice, since it often throws a quick 502/429 when busy), then the mirrors.
+    for (const url of [OVERPASS[0], OVERPASS[0], ...OVERPASS.slice(1)]) {
+      if (errors.length) await new Promise(r => setTimeout(r, 8000));
       const t0 = Date.now();
       try {
         const r = await fetch(url, {
@@ -598,8 +600,10 @@ module.exports = function registerLeads(app, deps) {
   ];
   // Leaves a readable trail in the Supabase API logs (a harmless read), since Railway logs aren't reachable from support tooling.
   const seedTrace = (msg) => supabase.from('leads').select('id').eq('source_ref', `seed-trace:${String(msg).slice(0, 180)}`).limit(1).then(() => {}, () => {});
+  let seedAttempts = 0;
   async function seedStarterLeads() {
     if (process.env.SEED_LEADS === 'off') return;
+    seedAttempts++;
     const { count } = await supabase.from('leads').select('*', { count: 'exact', head: true }).eq('source', 'OpenStreetMap');
     if (count) return;
     console.log('Seeding starter leads for southern suburbs...');
@@ -618,7 +622,12 @@ module.exports = function registerLeads(app, deps) {
         } catch (err) {
           console.error('Seed failed:', key, area.name, err.message);
           seedTrace(`FAIL ${key} ${area.name} ${err.message}`);
-          if (++failsInARow >= 4) { seedTrace('gave up'); return; }
+          if (++failsInARow >= 4) {
+            // Free map servers are down or busy: try again later, up to 8 times (about a day).
+            if (seedAttempts < 8) { seedTrace(`retry later (attempt ${seedAttempts})`); setTimeout(() => seedStarterLeads().catch(() => {}), 3 * 3600 * 1000); }
+            else seedTrace('gave up');
+            return;
+          }
         }
         await new Promise(r => setTimeout(r, 3000)); // be polite to the free OSM servers
       }
