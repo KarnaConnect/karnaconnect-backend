@@ -152,10 +152,13 @@ module.exports = function registerLeads(app, deps) {
 
   // ── Emails ────────────────────────────────────────────────────────────────
   function emailFooter(email) {
-    const base = (process.env.PUBLIC_BACKEND_URL || 'https://expressjs-production-48b3.up.railway.app').replace(/\/$/, '');
-    const url = `${base}/unsubscribe?e=${encodeURIComponent(email)}&t=${unsubToken(email)}`;
+    // Link on our own domain (the dashboard proxies it to /unsubscribe here): a railway.app link next to a
+    // mashai.com.au sender is a spam signal.
+    const base = (process.env.UNSUBSCRIBE_BASE_URL || 'https://dashboard.mashai.com.au/api/unsubscribe').replace(/\/$/, '');
+    const url = `${base}?e=${encodeURIComponent(email)}&t=${unsubToken(email)}`;
     return {
       url,
+      text: `You're getting this because you said yes to a summary email on a call with Mash today. Mash AI is a trading name of KarnaConnect (ABN 84 924 272 443), South Lake WA 6164. To unsubscribe: ${url}`,
       html: `<hr style="border:none;border-top:1px solid #e2e8f0;margin:28px 0 16px;">
         <p style="font-size:12px;color:#64748b;line-height:1.5;">You're receiving this because you said yes to a summary email on a call with Mash today. Mash AI is a trading name of KarnaConnect (ABN 84 924 272 443), South Lake WA 6164. <a href="${url}" style="color:#64748b;">Unsubscribe</a> and we won't email you again.</p>`
     };
@@ -172,21 +175,37 @@ module.exports = function registerLeads(app, deps) {
     const business = lead?.business_name || '';
     const angle = industryAngle(lead?.industry);
     const footer = emailFooter(to);
-    const html = `<div style="font-family:Segoe UI,Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#151129;line-height:1.55;">
+    // Kept plain and personal (one link, no buttons or price lists): reads like a note from Adil, which
+    // is what it is, and it keeps it out of promotions/spam folders.
+    const helpLine = angle || 'Mash picks up the calls you can\'t get to, has a proper chat with the caller, and sends you the details straight away, so no enquiry is lost.';
+    const text = [
+      `Hi${first ? ' ' + first : ''},`,
+      '',
+      'Thanks for chatting with Mash just now. Here\'s a quick summary so you\'ve got it in writing.',
+      '',
+      discussionNotes ? `What we talked about: ${discussionNotes}` : null,
+      discussionNotes ? '' : null,
+      `How Mash could help${business ? ' ' + business : ''}: ${helpLine}`,
+      '',
+      `If you'd like to try it, there's a free 7-day trial (plans start at $149 a month, cancel any time): ${TRIAL_LINK}`,
+      '',
+      'Or if you\'d rather have a quick 15-minute chat first, just reply with a time that suits.',
+      '',
+      'Cheers,',
+      'Adil Shah',
+      'Founder, Mash AI',
+      '',
+      '--',
+      footer.text
+    ].filter(l => l !== null).join('\n');
+    const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;max-width:560px;color:#222;line-height:1.55;">
       <p>Hi${first ? ' ' + esc(first) : ''},</p>
-      <p>Thanks for chatting with Mash just now. As promised, here's a quick summary so you've got it in writing.</p>
-      ${discussionNotes ? `<p style="background:#f5f3fe;border-left:3px solid #6f5fd6;border-radius:8px;padding:12px 14px;"><strong>What we talked about:</strong> ${esc(discussionNotes)}</p>` : ''}
-      <p><strong>How Mash would help${business ? ' ' + esc(business) : ''}:</strong> ${esc(angle || 'Mash answers every call 24/7, takes the details and sends you a summary straight away, so no enquiry is lost.')}</p>
-      <ul style="padding-left:18px;">
-        <li>Answers every call 24/7 in a natural Australian voice</li>
-        <li>Instant email and app alerts with a summary of each call</li>
-        <li>Live dashboard with recordings, transcripts and call tags</li>
-        <li>No setup fees, no lock-in contracts</li>
-      </ul>
-      <p>Plans start at $149 a month, and every plan comes with a <strong>7-day free trial</strong>. You're not charged until day 8, and you can cancel any time.</p>
-      <p style="text-align:center;margin:26px 0;"><a href="${TRIAL_LINK}" style="background:linear-gradient(135deg,#534AB7,#7F77DD);color:#fff;padding:13px 24px;border-radius:8px;text-decoration:none;font-weight:700;">Start my free trial</a></p>
-      <p>Prefer a quick 15-minute chat first? Just reply to this email with a time that suits and I'll set it up.</p>
-      <p>Cheers,<br>Adil Shah<br>Founder, Mash AI<br><a href="https://mashai.com.au" style="color:#534AB7;">mashai.com.au</a></p>
+      <p>Thanks for chatting with Mash just now. Here's a quick summary so you've got it in writing.</p>
+      ${discussionNotes ? `<p><b>What we talked about:</b> ${esc(discussionNotes)}</p>` : ''}
+      <p><b>How Mash could help${business ? ' ' + esc(business) : ''}:</b> ${esc(helpLine)}</p>
+      <p>If you'd like to try it, there's a <a href="${TRIAL_LINK}">free 7-day trial</a> (plans start at $149 a month, cancel any time).</p>
+      <p>Or if you'd rather have a quick 15-minute chat first, just reply with a time that suits.</p>
+      <p>Cheers,<br>Adil Shah<br>Founder, Mash AI</p>
       ${footer.html}
     </div>`;
     try {
@@ -194,9 +213,13 @@ module.exports = function registerLeads(app, deps) {
         from: FROM_EMAIL,
         reply_to: 'hello@mashai.com.au',
         to,
-        subject: `${first ? first + ', here' : 'Here'}'s your Mash summary${business ? ' for ' + business : ''}`,
+        subject: `Summary of our call${business ? ' with ' + business : ''} today`,
         html,
-        headers: { 'List-Unsubscribe': `<${footer.url}>, <mailto:hello@mashai.com.au?subject=unsubscribe>` }
+        text,
+        headers: {
+          'List-Unsubscribe': `<${footer.url}>, <mailto:hello@mashai.com.au?subject=unsubscribe>`,
+          'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
+        }
       });
     } catch (err) {
       console.error('Summary email failed:', err.message);
@@ -206,13 +229,22 @@ module.exports = function registerLeads(app, deps) {
     return { sent: true };
   }
 
-  app.get('/unsubscribe', async (req, res) => {
-    const email = String(req.query.e || '').trim();
-    const ok = email && req.query.t === unsubToken(email);
+  async function unsubscribe(email, token) {
+    const ok = !!email && token === unsubToken(email);
     if (ok) {
       await supabase.from('leads').update({ email_opt_out: true, updated_at: new Date().toISOString() }).ilike('email', email);
       console.log('Unsubscribed:', email);
     }
+    return ok;
+  }
+  // One-click unsubscribe from the mail app (RFC 8058)
+  app.post('/unsubscribe', async (req, res) => {
+    const ok = await unsubscribe(String(req.query.e || '').trim(), req.query.t);
+    res.status(ok ? 200 : 400).json({ ok });
+  });
+  app.get('/unsubscribe', async (req, res) => {
+    const email = String(req.query.e || '').trim();
+    const ok = await unsubscribe(email, req.query.t);
     res.set('Content-Type', 'text/html').send(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><div style="font-family:Segoe UI,Helvetica,Arial,sans-serif;max-width:480px;margin:80px auto;padding:0 20px;text-align:center;color:#151129;">
       <h2>${ok ? "You're unsubscribed" : 'Link not recognised'}</h2>
       <p style="color:#64748b;">${ok ? "We won't email you again. Sorry for the bother." : 'Please email hello@mashai.com.au and we will remove you straight away.'}</p></div>`);

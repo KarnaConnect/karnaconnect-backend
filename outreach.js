@@ -646,11 +646,14 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
             try {
               await resend.emails.send({
                 from: FROM_EMAIL, to: a.email,
-                subject: 'Your Mash AI free trial link',
-                html: `<div style="font-family:Segoe UI,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#151129;">
+                reply_to: 'hello@mashai.com.au',
+                subject: 'Your free trial link',
+                headers: { 'List-Unsubscribe': '<mailto:hello@mashai.com.au?subject=unsubscribe>' },
+                text: `Hi${a.name ? ' ' + a.name.split(' ')[0] : ''},\n\nThanks for chatting with Mash, our virtual assistant, just now. As promised, here's the link to start your free 7-day trial: ${TRIAL_LINK}\n\nSetup takes about five minutes, and our team builds and tests your virtual assistant, usually within 24 hours. Plans start at $149 a month, no setup fees or lock-in, and you can cancel any time.\n\nQuestions? Just reply to this email.\n\nAdil Shah\nFounder, Mash AI\n\n--\nMash AI is a trading name of KarnaConnect (ABN 84 924 272 443), South Lake WA 6164. You got this one-off email because you asked for the trial link on a call with us. To ask us not to contact you, reply "unsubscribe".`,
+                html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;max-width:560px;color:#222;line-height:1.55;">
                   <p>Hi${a.name ? ' ' + esc(a.name.split(' ')[0]) : ''},</p>
                   <p>Thanks for chatting with Mash, our virtual assistant, just now. As promised, here's the link to start your free 7-day trial. Setup takes about five minutes, and our team builds and tests your virtual assistant, usually within 24 hours.</p>
-                  <p style="text-align:center;margin:28px 0;"><a href="${TRIAL_LINK}" style="background:linear-gradient(135deg,#534AB7,#7F77DD);color:white;padding:13px 24px;border-radius:8px;text-decoration:none;font-weight:700;">Start my free trial</a></p>
+                  <p><a href="${TRIAL_LINK}">Start your free trial here</a>.</p>
                   <p>Plans start at $149/month, with no setup fees and no lock-in. You won't be charged until day 8, and you can cancel any time.</p>
                   <p>Questions? Just reply to hello@mashai.com.au, or call the number we rang you from.</p>
                   <p>Adil Shah<br>Founder, Mash AI</p>
