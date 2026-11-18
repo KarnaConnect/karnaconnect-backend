@@ -341,7 +341,8 @@ module.exports = function registerLeads(app, deps) {
       for (const m of html.matchAll(/mailto:([^"'?\s>]+)/gi)) found.add(decodeURIComponent(m[1]).toLowerCase());
       for (const m of html.matchAll(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(?:com\.au|net\.au|org\.au|com|au|net|org|biz)\b/g)) found.add(m[0].toLowerCase());
       const host = new URL(u).hostname.replace(/^www\./, '');
-      const list = [...found].filter(e => !/\.(png|jpg|jpeg|gif|webp|svg)$/.test(e) && !/example\.|sentry|wixpress|domain\.com|yourname|email@/.test(e));
+      // Skip image names, placeholders, theme demos, and our own address (some bot-block pages echo our User-Agent back).
+      const list = [...found].filter(e => !/\.(png|jpg|jpeg|gif|webp|svg)$/.test(e) && !/&#|example\.|sentry|wixpress|domain\.com|yourname|email@|mashai\.com\.au|edge-themes|themeforest|godaddy/.test(e));
       return list.find(e => e.endsWith('@' + host)) || list.find(e => /^(info|hello|admin|enquir|contact|office|reception|bookings?|sales)@/.test(e)) || list[0] || null;
     } catch { return null; }
   }
