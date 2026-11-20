@@ -372,6 +372,13 @@ app.post('/webhook/vapi', async (req, res) => {
     return res.sendStatus(200);
   }
 
+  const result = await handleEndOfCallReport(message);
+  if (result.error) return res.status(500).json({ error: result.error });
+  res.json({ success: true, data: result.data });
+});
+
+// Saves an end-of-call report (from the VAPI webhook, or rebuilt from VAPI's API by the missed-call check)
+async function handleEndOfCallReport(message) {
   const call = message.call || {};
   const analysis = message.analysis || {};
   const customer = message.customer || call.customer || {};
@@ -429,7 +436,7 @@ app.post('/webhook/vapi', async (req, res) => {
 
   if (error) {
     console.log('Supabase error:', error);
-    return res.status(500).json({ error });
+    return { error };
   }
 
   console.log('Call saved successfully');
@@ -490,8 +497,8 @@ app.post('/webhook/vapi', async (req, res) => {
     }
   }
 
-  res.json({ success: true, data });
-});
+  return { data };
+}
 
 app.get('/backfill', async (req, res) => {
   console.log('Starting backfill...');
@@ -1108,6 +1115,44 @@ async function runCampaign(campaign) {
   console.log(`Campaign complete: ${campaign.name} — ${called} called, ${failed} failed`);
 }
 
+// ── Missed end-of-call reports ────────────────────────────────────────────────
+// VAPI's end-of-call webhook doesn't always arrive (two Single Calls on 20 Nov never did). Every 5 minutes,
+// ask VAPI for the sales agent's calls from the last 6 hours and save any the webhook missed.
+async function saveMissedSalesCalls() {
+  if (!process.env.VAPI_API_KEY) return;
+  const { data: agents } = await supabase.from('outbound_agents').select('vapi_agent_id').eq('purpose', 'sales');
+  for (const { vapi_agent_id: assistantId } of agents || []) {
+    if (!assistantId) continue;
+    const since = new Date(Date.now() - 6 * 3600000).toISOString();
+    const r = await fetch(`https://api.vapi.ai/call?assistantId=${assistantId}&createdAtGt=${encodeURIComponent(since)}&limit=100`, {
+      headers: { 'Authorization': 'Bearer ' + process.env.VAPI_API_KEY }
+    });
+    if (!r.ok) { console.error('Missed-call check: VAPI list failed', r.status); continue; }
+    const vapiCalls = await r.json();
+    // Only calls that ended more than 3 minutes ago, so the normal webhook has had its chance
+    const ended = (Array.isArray(vapiCalls) ? vapiCalls : []).filter(c => c.status === 'ended' && c.endedAt && Date.now() - new Date(c.endedAt).getTime() > 3 * 60000);
+    if (!ended.length) continue;
+    const { data: saved } = await supabase.from('calls').select('vapi_call_id').in('vapi_call_id', ended.map(c => c.id));
+    const have = new Set((saved || []).map(c => c.vapi_call_id));
+    for (const c of ended.filter(c => !have.has(c.id))) {
+      console.log('Missed-call check: saving call the webhook missed', c.id);
+      const startedAt = c.startedAt || c.createdAt;
+      await handleEndOfCallReport({
+        type: 'end-of-call-report',
+        call: c,
+        customer: c.customer,
+        analysis: c.analysis || {},
+        artifact: c.artifact || { transcript: c.transcript, recordingUrl: c.recordingUrl },
+        endedReason: c.endedReason,
+        endedAt: c.endedAt,
+        durationSeconds: startedAt ? (new Date(c.endedAt) - new Date(startedAt)) / 1000 : null
+      }).catch(err => console.error('Missed-call check: save failed', c.id, err.message));
+    }
+  }
+}
+cron.schedule('*/5 * * * *', () => saveMissedSalesCalls().catch(err => console.error('Missed-call check error:', err.message)));
+setTimeout(() => saveMissedSalesCalls().catch(() => {}), 60000);
+
 cron.schedule('* * * * *', async () => {
   try {
     const { data: due } = await supabase
@@ -1277,6 +1322,7 @@ app.post('/call/outbound', async (req, res) => {
     });
     const result = await vapiRes.json();
     if (!vapiRes.ok) return res.status(vapiRes.status).json({ error: result });
+    if (sales?.lead && sales.lead.source !== 'Test') await outreach.singleCallStarted(sales.lead, result.id).catch(err => console.error('Lead update after Single Call failed:', err.message));
     res.json({ success: true, callId: result.id });
   } catch (err) {
     res.status(500).json({ error: err.message });

@@ -54,6 +54,17 @@ function interestFrom(sd, outcome, endedReason) {
   return 'no_conversation';
 }
 
+// True when a live person spoke and then ended the call (not voicemail, a gatekeeper or a wrong number)
+const VOICEMAIL_RE = /message ?bank|you have reached|you've reached|not available|leave (a|your) message|after the (tone|beep)|voicemail|mailbox|is unavailable/i;
+function hungUpOnUs(message, outcome) {
+  if (message.endedReason !== 'customer-ended-call') return false;
+  if (/voicemail|gatekeeper|wrong number|callback/i.test(outcome || '')) return false;
+  const transcript = message.artifact?.transcript || message.transcript || '';
+  const userLines = transcript.split('\n').filter(l => /^User:/i.test(l.trim())).map(l => l.replace(/^User:\s*/i, ''));
+  if (!userLines.length || userLines.some(l => VOICEMAIL_RE.test(l))) return false;
+  return true;
+}
+
 // ── Minimal zip writer (deflate), so exports need no extra packages ─────────
 const zlib = require('zlib');
 const CRC_TABLE = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
@@ -299,8 +310,13 @@ module.exports = function registerLeads(app, deps) {
     const lead = await leadForCall(call);
     if (!lead) return;
     const sd = message.analysis?.structuredData || {};
-    const outcome = sd.outcome || message.endedReason || '';
-    const interest = interestFrom(sd, outcome, message.endedReason);
+    let outcome = sd.outcome || message.endedReason || '';
+    let interest = interestFrom(sd, outcome, message.endedReason);
+    // A real person answered and hung up before any interest: don't mark it "No answer" and ring them again
+    if (interest === 'no_conversation' && hungUpOnUs(message, outcome)) {
+      interest = 'not_interested';
+      outcome = 'Hung up';
+    }
     const s = await settings();
     const now = new Date();
     const patch = {
@@ -842,5 +858,5 @@ module.exports = function registerLeads(app, deps) {
   }
   setTimeout(() => seedStarterLeads().catch(err => console.error('Lead seed error:', err.message)), 60000);
 
-  return { onTool, onCallEnded, tickFollowUps, settings, sendSummaryEmail, findLeads, emailFooter, _internal: { interestFrom, unsubToken, findEmailOnWebsite } };
+  return { onTool, onCallEnded, tickFollowUps, settings, sendSummaryEmail, findLeads, emailFooter, _internal: { interestFrom, hungUpOnUs, unsubToken, findEmailOnWebsite } };
 };
