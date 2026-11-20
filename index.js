@@ -1245,12 +1245,18 @@ app.get('/outbound-agents/:clientId', async (req, res) => {
 // ── Outbound call ─────────────────────────────────────────────────────────────
 app.post('/call/outbound', async (req, res) => {
   try {
-    const { agentId, phoneNumberId, customerNumber, customerName } = req.body;
+    const { agentId, phoneNumberId, customerNumber, customerName, businessName, industry, suburb } = req.body;
     if (!agentId || !phoneNumberId || !customerNumber) {
       return res.status(400).json({ error: 'agentId, phoneNumberId and customerNumber are required' });
     }
     if (await outreach.isOnDoNotCall(customerNumber)) {
       return res.status(400).json({ error: 'This number is on the Mash do-not-call list' });
+    }
+    // Sales agent: give it the right business, industry playbook and suburb (from the lead or the form)
+    let sales = null;
+    if (await outreach.isSalesAgentVapiId(agentId)) {
+      sales = await outreach.singleCallSetup({ customerNumber, customerName, businessName, industry, suburb });
+      if (sales.error) return res.status(400).json({ error: sales.error });
     }
     const vapiRes = await fetch('https://api.vapi.ai/call/phone', {
       method: 'POST',
@@ -1262,8 +1268,11 @@ app.post('/call/outbound', async (req, res) => {
         assistantId: agentId,
         phoneNumberId,
         customer: { number: customerNumber, name: customerName || undefined },
-        // Test calls from the dashboard to the sales agent get the same variables a campaign call would
-        ...(await outreach.isSalesAgentVapiId(agentId) ? { assistantOverrides: { variableValues: outreach.testCallVariables(customerName) } } : {})
+        ...(sales ? {
+          assistantOverrides: { variableValues: sales.variables },
+          // Known lead: the outcome updates that lead (Hot, Wants more info, follow-ups) like a campaign call
+          ...(sales.lead && sales.lead.source !== 'Test' ? { metadata: { leadId: sales.lead.id } } : {})
+        } : {})
       })
     });
     const result = await vapiRes.json();

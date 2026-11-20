@@ -908,19 +908,38 @@ module.exports = function registerOutreach(app, { supabase, resend }) {
       const { data } = await supabase.from('outbound_agents').select('id').eq('vapi_agent_id', vapiId).eq('purpose', 'sales').limit(1);
       return !!data?.length;
     },
-    testCallVariables: (name) => {
-      const ind = industries.getIndustry('trades');
+    // Single Call tab with the sales agent. Works for any number: if it's a lead we use that lead's
+    // business, industry and suburb (typed fields win), so the pitch fits; unknown numbers with no
+    // industry get the general small-business playbook, never another industry's.
+    singleCallSetup: async ({ customerNumber, customerName, businessName, industry, suburb }) => {
+      const phone = normalizeAuPhone(customerNumber);
+      let lead = null;
+      if (phone) {
+        const { data } = await supabase.from('leads').select('*').eq('phone_number', phone).order('created_at').limit(1);
+        lead = data?.[0] || null;
+      }
+      const isTest = lead?.source === 'Test';
+      // Legal calling hours apply to real businesses (weekdays 9-8, Sat 9-5, never Sun or national holidays).
+      // Your own test number (a lead with source 'Test') can be called any time.
+      if (!isTest && phone && !canCallNow({ timezone: DEFAULT_SALES_CAMPAIGN.timezone, weekdays_only: false }, phone)) {
+        return { error: 'Outside legal calling hours for this number (weekdays 9am-8pm, Saturday 9am-5pm, never Sundays or national public holidays, in their local time).' };
+      }
+      const industryKey = industries.matchIndustry(industry) || lead?.industry || null;
+      const ind = industries.getIndustry(industryKey);
       return {
-        businessName: name ? `${name}'s Plumbing` : 'your business',
-        contactName: name || '',
-        industry: ind.label,
-        suburb: 'South Lake',
-        knownEmail: '',
-        industryPlaybook: ind.playbook,
-        today: perthToday(),
-        callType: 'cold',
-        previousSummary: '',
-        lastCallDate: ''
+        lead,
+        variables: {
+          businessName: (businessName || '').trim() || (lead?.business_name || '').replace(/\s*\(test\)$/i, '') || 'your business',
+          contactName: customerName || '',
+          industry: ind ? ind.label : ((industry || '').trim() || 'small business'),
+          suburb: (suburb || '').trim() || lead?.suburb || '',
+          knownEmail: lead?.email || '',
+          industryPlaybook: ind ? ind.playbook : industries.DEFAULT_PLAYBOOK,
+          today: perthToday(),
+          callType: 'cold',
+          previousSummary: '',
+          lastCallDate: ''
+        }
       };
     },
     DEFAULT_SALES_CAMPAIGN,
